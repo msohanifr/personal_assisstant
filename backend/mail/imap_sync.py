@@ -126,7 +126,7 @@ def _get_address_list(msg, header_name: str) -> str:
     return ", ".join(values)
 
 
-def sync_imap_account(account: EmailAccount, limit: int = 50) -> int:
+def sync_imap_account(account: EmailAccount, limit: int = 100) -> int:
     """
     Fetch recent messages over IMAP for a given EmailAccount and store them
     as EmailMessage rows.

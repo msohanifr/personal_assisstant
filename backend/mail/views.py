@@ -7,9 +7,11 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from core.views import IsOwner
+from core.serializers import TaskSerializer, NoteSerializer
+from .ai_agent import analyze_email_to_tasks_and_notes
+from .imap_sync import sync_imap_account
 from .models import EmailAccount, EmailMessage
 from .serializers import EmailAccountSerializer, EmailMessageSerializer
-from .imap_sync import sync_imap_account
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +20,7 @@ class EmailAccountViewSet(viewsets.ModelViewSet):
     """
     Manage the user's connected email accounts and trigger sync.
 
-    For provider authentication:
-      - Gmail: use an App Password (recommended) or OAuth2 (to be added).
-      - Outlook/Office 365: basic IMAP auth is mostly disabled; prefer OAuth/Graph API.
-      - Yahoo / generic IMAP: IMAP username/password or app passwords.
-
-    The `sync` action uses IMAP (username/password or app password) right now.
+    The `sync` action uses IMAP (username/password or app password).
     """
 
     serializer_class = EmailAccountSerializer
@@ -37,7 +34,7 @@ class EmailAccountViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         logger.info(
-            "EmailAccountViewSet.perform_create for user %s, email=%s",
+            "EmailAccountViewSet.perform_create for user=%s, email=%s",
             self.request.user,
             serializer.validated_data.get("email_address"),
         )
@@ -45,7 +42,7 @@ class EmailAccountViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         logger.info(
-            "EmailAccountViewSet.perform_update for user %s, account_id=%s",
+            "EmailAccountViewSet.perform_update for user=%s, account_id=%s",
             self.request.user,
             self.get_object().id,
         )
@@ -55,13 +52,6 @@ class EmailAccountViewSet(viewsets.ModelViewSet):
     def sync(self, request, pk=None):
         """
         Trigger an IMAP sync for this account.
-
-        Right now this:
-          - Connects via IMAP (using username + password/app password)
-          - Fetches the latest N messages from INBOX (default 50)
-          - Stores them in EmailMessage model
-
-        Response contains how many new messages were imported.
         """
         account = self.get_object()
         logger.info(
@@ -124,12 +114,12 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
 
         account = params.get("account")
         if account:
-            try:
-                qs = qs.filter(account_id=int(account))
-            except ValueError:
-                logger.warning(
-                    "EmailMessageViewSet: invalid account param '%s'", account
-                )
+          try:
+              qs = qs.filter(account_id=int(account))
+          except ValueError:
+              logger.warning(
+                  "EmailMessageViewSet: invalid account param '%s'", account
+              )
 
         folder = params.get("folder")
         if folder:
@@ -148,5 +138,57 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(body_text__icontains=q)
             )
 
-        # default ordering is -sent_at from model Meta
         return qs.order_by("-sent_at")
+
+    @action(detail=True, methods=["post"])
+    def analyze(self, request, pk=None):
+        """
+        Use AI to analyze this email and create Task + Note objects.
+
+        Response:
+        {
+          "status": "ok",
+          "created_tasks": [...],
+          "created_notes": [...]
+        }
+        """
+        email = self.get_object()
+        logger.info(
+            "EmailMessageViewSet.analyze: user=%s requested AI analysis for email id=%s",
+            request.user,
+            email.id,
+        )
+
+        try:
+            tasks, notes = analyze_email_to_tasks_and_notes(email)
+        except Exception as exc:
+            logger.exception(
+                "EmailMessageViewSet.analyze: Analysis failed for email id=%s: %s",
+                email.id,
+                exc,
+            )
+            return Response(
+                {
+                    "status": "error",
+                    "detail": str(exc),
+                },
+                status=400,
+            )
+
+        task_data = TaskSerializer(tasks, many=True).data
+        note_data = NoteSerializer(notes, many=True).data
+
+        logger.info(
+            "EmailMessageViewSet.analyze: Created %s tasks, %s notes for email id=%s",
+            len(task_data),
+            len(note_data),
+            email.id,
+        )
+
+        return Response(
+            {
+                "status": "ok",
+                "created_tasks": task_data,
+                "created_notes": note_data,
+            }
+        )
