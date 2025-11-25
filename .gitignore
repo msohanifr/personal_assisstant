@@ -1,0 +1,24 @@
+# Environment files
+.env
+*.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# Django / Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+*.sqlite3
+
+# Node / React
+node_modules/
+dist/
+build/
+
+# Docker data
+pgdata/
