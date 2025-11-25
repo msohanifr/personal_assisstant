@@ -1,3 +1,4 @@
+// frontend/src/App.jsx
 import React, { useEffect, useState } from "react";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import Layout from "./components/Layout";
@@ -15,10 +16,32 @@ const App = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!isAuth) navigate("/login");
+    const hasToken = !!localStorage.getItem("access");
+    console.debug("[App] Initial auth state. hasToken:", hasToken);
+    if (!hasToken) {
+      console.debug("[App] No token on load – navigating to /login");
+      navigate("/login");
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    console.debug("[App] isAuth changed:", isAuth);
+    if (!isAuth) {
+      console.debug("[App] isAuth=false – navigating to /login");
+      navigate("/login");
+    }
   }, [isAuth, navigate]);
 
-  if (!isAuth) return <Login onLogin={() => setIsAuth(true)} />;
+  const handleLoginSuccess = () => {
+    console.debug("[App] handleLoginSuccess called");
+    setIsAuth(true);
+    navigate("/");
+  };
+
+  if (!isAuth && !localStorage.getItem("access")) {
+    // Not authenticated: show login page only
+    return <Login onLogin={handleLoginSuccess} />;
+  }
 
   return (
     <Layout>
@@ -30,9 +53,10 @@ const App = () => {
         <Route path="/contacts" element={<Contacts />} />
         <Route path="/emails" element={<Emails />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/login" element={<Login onLogin={() => setIsAuth(true)} />} />
+        <Route path="/login" element={<Login onLogin={handleLoginSuccess} />} />
       </Routes>
     </Layout>
   );
 };
+
 export default App;
