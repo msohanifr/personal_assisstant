@@ -16,6 +16,10 @@ const Tasks = () => {
   const [error, setError] = useState("");
   const [dragIndex, setDragIndex] = useState(null);
   const [groupMode, setGroupMode] = useState("day"); // "day" | "week" | "month"
+  const [editingTaskId, setEditingTaskId] = useState(null);
+
+  const [relatedNotes, setRelatedNotes] = useState([]);
+  const [relatedNotesError, setRelatedNotesError] = useState("");
 
   const load = async () => {
     setError("");
@@ -52,14 +56,45 @@ const Tasks = () => {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+    console.debug("[Tasks] Form change:", name, "->", value);
     setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const toInputDateTime = (value) => {
+    if (!value) return "";
+    try {
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) {
+        console.warn("[Tasks] Could not parse due_date for input:", value);
+        return "";
+      }
+      const pad = (n) => n.toString().padStart(2, "0");
+      const year = d.getFullYear();
+      const month = pad(d.getMonth() + 1);
+      const day = pad(d.getDate());
+      const hours = pad(d.getHours());
+      const minutes = pad(d.getMinutes());
+      // datetime-local expects "YYYY-MM-DDTHH:MM"
+      return `${year}-${month}-${day}T${hours}:${minutes}`;
+    } catch (err) {
+      console.error("[Tasks] Error converting due_date to input format:", err, value);
+      return "";
+    }
+  };
+
+  const resetToNewTask = () => {
+    console.debug("[Tasks] Resetting form to new task");
+    setEditingTaskId(null);
+    setForm(emptyTask);
+    setError("");
+    setRelatedNotes([]);
+    setRelatedNotesError("");
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
 
-    // Build payload and inject "now" as due_date if user left it empty
     const payload = { ...form };
     if (!payload.due_date) {
       const now = new Date();
@@ -73,14 +108,40 @@ const Tasks = () => {
     }
 
     try {
-      console.debug("[Tasks] Creating task with payload:", payload);
-      const res = await client.post("/tasks/", payload);
-      console.debug("[Tasks] Task created:", res.data);
-      setForm(emptyTask);
-      // Reload (will sort again by date/time)
-      load();
+      if (!editingTaskId) {
+        // CREATE
+        console.debug("[Tasks] Creating task with payload:", payload);
+        const res = await client.post("/tasks/", payload);
+        console.debug("[Tasks] Task created:", res.data);
+        setForm(emptyTask);
+        setEditingTaskId(null);
+        setRelatedNotes([]);
+        setRelatedNotesError("");
+        load();
+      } else {
+        // UPDATE
+        console.debug(
+          "[Tasks] Updating task",
+          editingTaskId,
+          "with payload:",
+          payload
+        );
+        const res = await client.patch(`/tasks/${editingTaskId}/`, payload);
+        console.debug("[Tasks] Task updated:", res.data);
+
+        setTasks((prev) =>
+          prev.map((t) => (t.id === editingTaskId ? res.data : t))
+        );
+
+        setForm({
+          title: res.data.title || "",
+          description: res.data.description || "",
+          status: res.data.status || "todo",
+          due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
+        });
+      }
     } catch (err) {
-      console.error("[Tasks] Error creating task:", err);
+      console.error("[Tasks] Error saving task:", err);
 
       if (err.response) {
         const { status, data } = err.response;
@@ -90,14 +151,51 @@ const Tasks = () => {
           );
         } else {
           setError(
-            `Error ${status} while creating task: ${
+            `Error ${status} while saving task: ${
               typeof data === "string" ? data : JSON.stringify(data)
             }`
           );
         }
       } else {
-        setError(
-          "Network error while creating task. Check console for details."
+        setError("Network error while saving task. Check console for details.");
+      }
+    }
+  };
+
+  // Load notes attached to a given task
+  const loadRelatedNotes = async (taskId) => {
+    setRelatedNotes([]);
+    setRelatedNotesError("");
+    if (!taskId) {
+      console.debug("[Tasks] loadRelatedNotes called with no taskId, skipping");
+      return;
+    }
+
+    try {
+      console.debug(
+        "[Tasks] Loading related notes for task %s via /notes/?task=%s",
+        taskId,
+        taskId
+      );
+      const res = await client.get(`/notes/?task=${taskId}`);
+      console.debug(
+        "[Tasks] Related notes loaded for task %s:",
+        taskId,
+        res.data
+      );
+      setRelatedNotes(res.data || []);
+    } catch (err) {
+      console.error("[Tasks] Error loading related notes:", err);
+      if (err.response) {
+        const { status, data } = err.response;
+        setRelatedNotesError(
+          `Error ${status} while loading notes: ${
+            typeof data === "string" ? data : JSON.stringify(data)
+          }`
+        );
+      } else {
+        setRelatedNotesError(
+          "Network error while loading notes. Check console for details."
         );
       }
     }
@@ -124,6 +222,13 @@ const Tasks = () => {
       setTasks((prev) =>
         prev.map((t) => (t.id === task.id ? res.data : t))
       );
+
+      if (editingTaskId === task.id) {
+        setForm((prev) => ({
+          ...prev,
+          status: res.data.status || prev.status,
+        }));
+      }
     } catch (err) {
       console.error("[Tasks] Error toggling task status:", err);
       if (err.response) {
@@ -317,7 +422,6 @@ const Tasks = () => {
       groupsMap.get(key).items.push({ task, index: idx, dateObj: d });
     });
 
-    // Turn map into array and sort groups by earliest date in each group
     const groupsArr = Array.from(groupsMap.values());
 
     groupsArr.sort((a, b) => {
@@ -345,63 +449,129 @@ const Tasks = () => {
     return groupsArr;
   }, [tasks, groupMode]);
 
+  // When clicking on a task row → load into form for editing + load related notes
+  const handleSelectTask = (task) => {
+    console.debug("[Tasks] Selecting task for editing:", task.id);
+    setEditingTaskId(task.id);
+    setForm({
+      title: task.title || "",
+      description: task.description || "",
+      status: task.status || "todo",
+      due_date: task.due_date ? toInputDateTime(task.due_date) : "",
+    });
+    setError("");
+    loadRelatedNotes(task.id);
+  };
+
   return (
     <div className="page">
       <h2 className="page-title">Tasks</h2>
       <div className="grid-2">
-        {/* New task form */}
-        <form onSubmit={handleSubmit} className="card form-card">
-          <h3 className="card-title">Add task</h3>
-          <label className="field-label">
-            Title
-            <input
-              className="field-input"
-              name="title"
-              value={form.title}
-              onChange={handleChange}
-              required
-            />
-          </label>
-          <label className="field-label">
-            Description
-            <textarea
-              className="field-input"
-              name="description"
-              value={form.description}
-              onChange={handleChange}
-              rows={3}
-            />
-          </label>
-          <label className="field-label">
-            Status
-            <select
-              className="field-input"
-              name="status"
-              value={form.status}
-              onChange={handleChange}
-            >
-              <option value="todo">To Do</option>
-              <option value="in_progress">In Progress</option>
-              <option value="done">Done</option>
-            </select>
-          </label>
-          <label className="field-label">
-            Due date
-            <input
-              className="field-input"
-              type="datetime-local"
-              name="due_date"
-              value={form.due_date}
-              onChange={handleChange}
-            />
-          </label>
+        {/* New / Edit task form + related notes */}
+        <div className="card form-card">
+          <form onSubmit={handleSubmit}>
+            <div className="flex items-center justify-between">
+              <h3 className="card-title">
+                {editingTaskId ? "Edit task" : "Add task"}
+              </h3>
+              {editingTaskId && (
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={resetToNewTask}
+                >
+                  New task
+                </button>
+              )}
+            </div>
 
-          {error && <p className="error-text mt-2">{error}</p>}
+            <label className="field-label">
+              Title
+              <input
+                className="field-input"
+                name="title"
+                value={form.title}
+                onChange={handleChange}
+                required
+              />
+            </label>
+            <label className="field-label">
+              Description
+              <textarea
+                className="field-input"
+                name="description"
+                value={form.description}
+                onChange={handleChange}
+                rows={3}
+              />
+            </label>
+            <label className="field-label">
+              Status
+              <select
+                className="field-input"
+                name="status"
+                value={form.status}
+                onChange={handleChange}
+              >
+                <option value="todo">To Do</option>
+                <option value="in_progress">In Progress</option>
+                <option value="done">Done</option>
+              </select>
+            </label>
+            <label className="field-label">
+              Due date
+              <input
+                className="field-input"
+                type="datetime-local"
+                name="due_date"
+                value={form.due_date}
+                onChange={handleChange}
+              />
+            </label>
 
-          <button className="primary-btn mt-2" type="submit">
-            Save
-          </button>
-        </form>
+            {error && <p className="error-text mt-2">{error}</p>}
+
+            <button className="primary-btn mt-2" type="submit">
+              {editingTaskId ? "Update" : "Save"}
+            </button>
+          </form>
+
+          {/* Related notes for selected task */}
+          {editingTaskId && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between">
+                <h4
+                  className="text-sm font-medium"
+                  style={{ margin: 0, padding: 0 }}
+                >
+                  Related notes
+                </h4>
+              </div>
+              {relatedNotesError && (
+                <p className="error-text mt-1">{relatedNotesError}</p>
+              )}
+              {!relatedNotesError && relatedNotes.length === 0 && (
+                <p className="muted text-xs mt-1">
+                  No notes attached to this task yet.
+                </p>
+              )}
+              {relatedNotes.length > 0 && (
+                <ul className="list mt-2">
+                  {relatedNotes.map((n) => (
+                    <li key={n.id} className="card" style={{ marginBottom: 6 }}>
+                      <div className="font-medium">{n.title}</div>
+                      <div className="muted text-xs">
+                        {n.job && <span>{n.job} · </span>}
+                        {n.note_type === "daily" ? "Daily note" : "General"}
+                      </div>
+                      <p className="mt-1 text-sm line-clamp-2">{n.content}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Task list with grouping + drag handle + done checkbox + due date */}
         <div className="card">
@@ -455,6 +625,7 @@ const Tasks = () => {
                   {group.items.map(({ task: t, index }) => {
                     const isDone = t.status === "done";
                     const dueLabel = formatDueDate(t.due_date);
+                    const isSelected = editingTaskId === t.id;
 
                     return (
                       <li
@@ -465,15 +636,22 @@ const Tasks = () => {
                         onDragOver={(e) => handleDragOver(e, index)}
                         onDrop={(e) => handleDrop(e, index)}
                         onDragEnd={handleDragEnd}
+                        onClick={() => handleSelectTask(t)}
                         style={{
                           padding: "6px 4px",
                           borderRadius: "12px",
                           border:
                             dragIndex === index
                               ? "1px dashed #f59e0b"
+                              : isSelected
+                              ? "1px solid #f97316"
                               : "1px solid transparent",
                           backgroundColor:
-                            dragIndex === index ? "#fffbeb" : "transparent",
+                            dragIndex === index
+                              ? "#fffbeb"
+                              : isSelected
+                              ? "#fff7ed"
+                              : "transparent",
                         }}
                       >
                         {/* Left: sandwich drag handle */}
@@ -490,6 +668,7 @@ const Tasks = () => {
                             cursor: "grab",
                             backgroundColor: "white",
                           }}
+                          onClick={(e) => e.stopPropagation()}
                         >
                           <FaGripLines className="muted" />
                         </div>
@@ -503,6 +682,7 @@ const Tasks = () => {
                             type="checkbox"
                             checked={isDone}
                             onChange={() => handleToggleDone(t, index)}
+                            onClick={(e) => e.stopPropagation()}
                           />
                           <div>
                             <div
