@@ -5,11 +5,20 @@ from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import Profile, Task, Note, NoteAttachment, Contact, CalendarEvent
+from .models import (
+    Profile,
+    Task,
+    TaskTag,
+    Note,
+    NoteAttachment,
+    Contact,
+    CalendarEvent,
+)
 from .serializers import (
     UserSerializer,
     ProfileSerializer,
     TaskSerializer,
+    TaskTagSerializer,
     NoteSerializer,
     NoteAttachmentSerializer,
     ContactSerializer,
@@ -98,6 +107,37 @@ class TaskViewSet(viewsets.ModelViewSet):
         )
         super().perform_destroy(instance)
 
+class TaskTagViewSet(viewsets.ModelViewSet):
+    serializer_class = TaskTagSerializer
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
+
+    def get_queryset(self):
+        logger.debug(
+            "TaskTagViewSet.get_queryset for user %s", self.request.user
+        )
+        return TaskTag.objects.filter(user=self.request.user).order_by("name")
+
+    def perform_create(self, serializer):
+        logger.info(
+            "TaskTagViewSet.perform_create: Creating tag for user %s",
+            self.request.user,
+        )
+        serializer.save(user=self.request.user)
+
+    def perform_update(self, serializer):
+        logger.info(
+            "TaskTagViewSet.perform_update: Updating tag for user %s",
+            self.request.user,
+        )
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        logger.info(
+            "TaskTagViewSet.perform_destroy: Deleting tag id=%s for user=%s",
+            instance.id,
+            self.request.user,
+        )
+        super().perform_destroy(instance)
 
 class NoteViewSet(viewsets.ModelViewSet):
     serializer_class = NoteSerializer

@@ -16,33 +16,29 @@ const App = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const hasToken = !!localStorage.getItem("access");
-    console.debug("[App] Initial auth state. hasToken:", hasToken);
-    if (!hasToken) {
-      console.debug("[App] No token on load – navigating to /login");
-      navigate("/login");
-    }
-  }, [navigate]);
-
-  useEffect(() => {
-    console.debug("[App] isAuth changed:", isAuth);
     if (!isAuth) {
-      console.debug("[App] isAuth=false – navigating to /login");
       navigate("/login");
     }
   }, [isAuth, navigate]);
 
   const handleLoginSuccess = () => {
-    console.debug("[App] handleLoginSuccess called");
     setIsAuth(true);
     navigate("/");
   };
 
-  if (!isAuth && !localStorage.getItem("access")) {
-    // Not authenticated: show login page only
-    return <Login onLogin={handleLoginSuccess} />;
+  // 🔥 When NOT logged in → Show ONLY Login (no sidebar, no layout, no pages)
+  if (!isAuth) {
+    return (
+      <Routes>
+        <Route
+          path="*"
+          element={<Login onLogin={handleLoginSuccess} />}
+        />
+      </Routes>
+    );
   }
 
+  // Logged in → show full app
   return (
     <Layout>
       <Routes>

@@ -677,13 +677,122 @@ html,
   font-size: 0.8rem;
 }
 
+/* == Tasks page layout overrides == */
+
+/* Make the Tasks page a bit wider than the default pages */
+.page.page-tasks {
+  max-width: 100%;        /* or 100% if you want truly full width */
+  margin: 0 auto;
+}
+
+/* Two-column layout just for Tasks page */
+.page-tasks .tasks-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.6fr); /* left form, right list */
+  gap: 16px;
+}
+
+/* Ensure cards inside Tasks page stretch properly */
+.page-tasks .card {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Make sure long task titles / descriptions never overflow the card */
+.page-tasks .card {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* == Dashboard page layout overrides == */
+.page.page-dashboard {
+  max-width: 100%;      /* use full width of the main container */
+  margin: 0 auto;
+}
+
+/* Make grid sections stretch evenly */
+.page-dashboard .grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Ensure cards stretch correctly */
+.page-dashboard .card {
+  width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+/* == Notes page layout overrides == */
+.page.page-notes {
+  max-width: 100%;   /* let Notes use the full main area width */
+  margin: 0 auto;
+}
+
+/* Ensure cards on Notes page stretch fully and wrap long content nicely */
+.page-notes .card {
+  width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* == Calendar page layout overrides == */
+.page.page-calendar {
+  max-width: 100%;   /* let Calendar use the full main area width */
+  margin: 0 auto;
+}
+
+/* Make sure cards on the Calendar page stretch and wrap properly */
+.page-calendar .card {
+  width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+/* == Contacts page layout overrides == */
+.page.page-contacts {
+  max-width: 100%;      /* let Contacts use full main content width */
+  margin: 0 auto;
+}
+
+/* Make sure cards stretch and content wraps nicely */
+.page-contacts .card {
+  width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Optional: slightly tweak columns for Contacts page only */
+.page-contacts .grid-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.5fr);
+  gap: 16px;
+}
+
+/* == Emails page layout overrides == */
+.page.page-emails {
+  max-width: 100%;   /* let Emails use full main content width */
+  margin: 0 auto;
+}
+
+/* Make sure cards on Emails page stretch and wrap properly */
+.page-emails .card {
+  width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
 /* Responsive */
 
 @media (max-width: 900px) {
   .app-shell {
     display: block;
   }
-
+.page-tasks .tasks-layout {
+  display: block; /* instead of grid */
+}
   .sidebar {
     position: fixed;
     left: 0;

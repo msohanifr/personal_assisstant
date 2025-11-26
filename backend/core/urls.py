@@ -9,12 +9,14 @@ from .views import (
     NoteAttachmentViewSet,
     ContactViewSet,
     CalendarEventViewSet,
+    TaskTagViewSet,  # 👈 NEW
 )
 
 router = DefaultRouter()
 router.register(r"users", UserViewSet, basename="user")
 router.register(r"profiles", ProfileViewSet, basename="profile")
 router.register(r"tasks", TaskViewSet, basename="task")
+router.register(r"task-tags", TaskTagViewSet, basename="task-tag")  # 👈 NEW
 router.register(r"notes", NoteViewSet, basename="note")
 router.register(r"note-attachments", NoteAttachmentViewSet, basename="note-attachment")
 router.register(r"contacts", ContactViewSet, basename="contact")

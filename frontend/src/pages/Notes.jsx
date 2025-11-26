@@ -491,8 +491,8 @@ const Notes = () => {
   };
 
   return (
-    <div className="page">
-      <h2 className="page-title">Notes</h2>
+    <div className="page page-notes">
+    <h2 className="page-title">Notes</h2>
 
       {/* FULL-WIDTH EDITOR */}
       <form

@@ -197,7 +197,7 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="page">
+    <div className="page page-dashboard">
       <h2 className="page-title">Today at a glance</h2>
 
       {error && <p className="error-text mt-2">{error}</p>}

@@ -174,10 +174,10 @@ const Calendar = () => {
   };
 
   return (
-    <div className="page">
-      <h2 className="page-title flex items-center gap-4">
-        <FaCalendarAlt /> <span>Calendar</span>
-      </h2>
+    <div className="page page-calendar">
+    <h2 className="page-title flex items-center gap-4">
+      <FaCalendarAlt /> <span>Calendar</span>
+    </h2>
 
       {/* Toolbar */}
       <div className="calendar-toolbar">

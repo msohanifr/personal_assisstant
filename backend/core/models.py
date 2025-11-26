@@ -13,6 +13,27 @@ class Profile(models.Model):
     def __str__(self):
         return f"Profile({self.user.username})"
 
+class TaskTag(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="task_tags",
+    )
+    name = models.CharField(max_length=64)
+    color = models.CharField(
+        max_length=16,
+        blank=True,
+        default="#f97316",  # a nice orange default
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("user", "name")
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
 
 class Task(models.Model):
     STATUS_CHOICES = [
@@ -20,7 +41,12 @@ class Task(models.Model):
         ("in_progress", "In Progress"),
         ("done", "Done"),
     ]
-
+    # 🔥 NEW: tags
+    tags = models.ManyToManyField(
+        "TaskTag",
+        related_name="tasks",
+        blank=True,
+    )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="tasks")
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -31,6 +57,8 @@ class Task(models.Model):
 
     def __str__(self):
         return self.title
+
+
 
 
 class Note(models.Model):
