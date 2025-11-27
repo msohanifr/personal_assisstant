@@ -9,6 +9,9 @@ const Layout = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [userError, setUserError] = useState("");
 
+  // 🔔 unread email count for sidebar badge
+  const [emailUnreadCount, setEmailUnreadCount] = useState(0);
+
   const toggleSidebar = () => {
     console.debug("[Layout] Toggling sidebar. Previous state:", sidebarOpen);
     setSidebarOpen((prev) => !prev);
@@ -33,9 +36,45 @@ const Layout = ({ children }) => {
     fetchUser();
   }, []);
 
+  // 🔔 Fetch unread email count (for all accounts)
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchUnreadCount = async () => {
+      try {
+        console.debug("[Layout] Fetching unread email count…");
+
+        // 👉 Adjust this endpoint/shape to your backend.
+        // Example 1 (preferred): /email-messages/unread-count/ -> { unread: 5 }
+        const res = await client.get("/email-messages/unread-count/");
+        const unread = res.data?.unread ?? 0;
+
+        if (isMounted) {
+          setEmailUnreadCount(unread);
+        }
+      } catch (err) {
+        console.error("[Layout] Error fetching unread count:", err);
+        // Silent fail; we don't want to show an error just for the badge.
+      }
+    };
+
+    // initial fetch + poll every 60s
+    fetchUnreadCount();
+    const intervalId = setInterval(fetchUnreadCount, 60_000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
   return (
     <div className="app-shell">
-      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        emailUnreadCount={emailUnreadCount}
+      />
       <main className="app-main">
         {/* Top bar with hamburger + user info */}
         <div className="topbar">
@@ -49,7 +88,10 @@ const Layout = ({ children }) => {
           </button>
           <span className="topbar-title">Assistant Hub</span>
 
-          <div style={{ marginLeft: "auto" }} className="flex items-center gap-4">
+          <div
+            style={{ marginLeft: "auto" }}
+            className="flex items-center gap-4"
+          >
             {userError && (
               <span className="text-xs muted">{userError}</span>
             )}
