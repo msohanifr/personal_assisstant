@@ -31,6 +31,9 @@ const Tasks = () => {
   // --- Search state ---
   const [searchQuery, setSearchQuery] = useState("");
 
+  // --- Delete state ---
+  const [isDeleting, setIsDeleting] = useState(false);
+
   // ----------------------------
   // Load tasks
   // ----------------------------
@@ -213,6 +216,50 @@ const Tasks = () => {
       } else {
         setError("Network error while saving task. Check console for details.");
       }
+    }
+  };
+
+  // ----------------------------
+  // Delete task
+  // ----------------------------
+  const handleDeleteTask = async (taskIdParam) => {
+    const id = taskIdParam || editingTaskId;
+    if (!id) {
+      console.debug("[Tasks] handleDeleteTask called with no id");
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this task? This cannot be undone.");
+    if (!confirmed) {
+      console.debug("[Tasks] Delete cancelled by user");
+      return;
+    }
+
+    try {
+      setIsDeleting(true);
+      console.debug("[Tasks] Deleting task id=%s via DELETE /tasks/%s/", id, id);
+      await client.delete(`/tasks/${id}/`);
+
+      setTasks((prev) => prev.filter((t) => t.id !== id));
+
+      // If we just deleted the currently edited task, reset the form
+      if (editingTaskId === id) {
+        resetToNewTask();
+      }
+    } catch (err) {
+      console.error("[Tasks] Error deleting task:", err);
+      if (err.response) {
+        const { status, data } = err.response;
+        setError(
+          `Error ${status} while deleting task: ${
+            typeof data === "string" ? data : JSON.stringify(data)
+          }`
+        );
+      } else {
+        setError("Network error while deleting task. Check console for details.");
+      }
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -624,7 +671,7 @@ const Tasks = () => {
   // ----------------------------
   return (
     <div className="page page-tasks">
-    <h2 className="page-title">Tasks</h2>
+      <h2 className="page-title">Tasks</h2>
 
       {/* Full-width form card */}
       <div className="card form-card">
@@ -634,13 +681,28 @@ const Tasks = () => {
               {editingTaskId ? "Edit task" : "Add task"}
             </h3>
             {editingTaskId && (
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={resetToNewTask}
-              >
-                New task
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={resetToNewTask}
+                >
+                  New task
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  style={{
+                    borderColor: "#fecaca",
+                    color: "#b91c1c",
+                    background: "#fef2f2",
+                  }}
+                  disabled={isDeleting}
+                  onClick={() => handleDeleteTask(editingTaskId)}
+                >
+                  {isDeleting ? "Deleting…" : "Delete"}
+                </button>
+              </div>
             )}
           </div>
 
@@ -1010,10 +1072,28 @@ const Tasks = () => {
                         </div>
                       </div>
 
-                      {/* Status pill */}
-                      <span className={`badge badge-${t.status}`}>
-                        {t.status.replace("_", " ")}
-                      </span>
+                      {/* Right: status + inline delete */}
+                      <div className="flex items-center gap-2">
+                        <span className={`badge badge-${t.status}`}>
+                          {t.status.replace("_", " ")}
+                        </span>
+                        <button
+                          type="button"
+                          className="text-xs"
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "#b91c1c",
+                            cursor: "pointer",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteTask(t.id);
+                          }}
+                        >
+                          delete
+                        </button>
+                      </div>
                     </li>
                   );
                 })}

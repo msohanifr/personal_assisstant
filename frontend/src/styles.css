@@ -1548,3 +1548,34 @@ html,
     grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 }
+
+/* ===== FIX TASKS PAGE COLORS ===== */
+
+.page-tasks,
+.page-tasks * {
+  background-color: white !important;
+  color: #0f172a !important;
+}
+
+/* Restore specific design elements AFTER forcing white */
+.page-tasks .card {
+  background: white !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04) !important;
+}
+
+.page-tasks .list li {
+  background: white !important;
+}
+
+.page-tasks .field-input,
+.page-tasks textarea {
+  background: white !important;
+  color: #0f172a !important;
+  border-color: #cbd5f5 !important;
+}
+
+.page-tasks .badge {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+}

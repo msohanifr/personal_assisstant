@@ -9,6 +9,8 @@ import {
   FaPause,
   FaRegClock,
   FaTag,
+  FaTrash,
+  FaUndo,
 } from "react-icons/fa";
 import client from "../api/client";
 
@@ -26,7 +28,7 @@ const HOURS_START = 6;
 const HOURS_END = 22;
 const PIXELS_PER_MINUTE = 0.8;
 
-// ---------- Date helpers ----------
+/* ---------- Date helpers ---------- */
 
 function sameDay(a, b) {
   return (
@@ -104,18 +106,23 @@ function groupEventsByDay(events) {
 
 // format Date → value for <input type="datetime-local">
 function toLocalInputValue(date) {
+  if (!date) return "";
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
   const pad = (n) => String(n).padStart(2, "0");
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hour = pad(date.getHours());
-  const minute = pad(date.getMinutes());
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hour = pad(d.getHours());
+  const minute = pad(d.getMinutes());
   return `${year}-${month}-${day}T${hour}:${minute}`;
 }
 
+/* ---------- Lightweight channel classification + color ---------- */
+
 // Rough marketing channel classification based on title/description
 function classifyChannel(event) {
-  const text = `${event.title} ${event.description}`.toLowerCase();
+  const text = `${event.title} ${event.description} ${event.location}`.toLowerCase();
   if (
     text.includes("instagram") ||
     text.includes("ig") ||
@@ -134,11 +141,15 @@ function classifyChannel(event) {
   return "Other";
 }
 
-function getChannelSlug(ev) {
-  return classifyChannel(ev).toLowerCase(); // "social" | "email" | "website" | "other"
+function getEventColorClass(event) {
+  const ch = classifyChannel(event);
+  if (ch === "Social") return "calendar-event-color-social";
+  if (ch === "Email") return "calendar-event-color-email";
+  if (ch === "Website") return "calendar-event-color-website";
+  return "calendar-event-color-other";
 }
 
-// ---------- Pomodoro hook ----------
+/* ---------- Pomodoro hook ---------- */
 
 function usePomodoro(initialMinutes = 25) {
   const [minutes, setMinutes] = useState(initialMinutes);
@@ -180,10 +191,14 @@ function usePomodoro(initialMinutes = 25) {
   return { label, running, reset, toggle };
 }
 
+/* ---------- Calendar page ---------- */
+
 const Calendar = () => {
   const [events, setEvents] = useState([]);
   const [form, setForm] = useState(EMPTY_EVENT);
-  const [view, setView] = useState("month");
+  const [editingEventId, setEditingEventId] = useState(null);
+
+  const [view, setView] = useState("week"); // Fantastical-like default
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
   const [selectedDate, setSelectedDate] = useState(() =>
     startOfDay(new Date())
@@ -216,12 +231,17 @@ const Calendar = () => {
     loadEvents();
   }, []);
 
+  const resetForm = () => {
+    setForm(EMPTY_EVENT);
+    setEditingEventId(null);
+  };
+
   const handleFieldChange = (e) => {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleCreateEvent = async (e) => {
+  const handleSubmitEvent = async (e) => {
     e.preventDefault();
     setError("");
 
@@ -230,13 +250,34 @@ const Calendar = () => {
       return;
     }
 
+    const payload = { ...form };
+
     try {
-      await client.post("/events/", form);
-      setForm(EMPTY_EVENT);
+      if (editingEventId) {
+        await client.put(`/events/${editingEventId}/`, payload);
+      } else {
+        await client.post("/events/", payload);
+      }
+      resetForm();
       await loadEvents();
     } catch (err) {
-      console.error("[Calendar] Failed to create event:", err);
+      console.error("[Calendar] Failed to save event:", err);
       setError("Could not save event. Please try again.");
+    }
+  };
+
+  const handleDeleteEvent = async () => {
+    if (!editingEventId) return;
+    const ok = window.confirm("Delete this event?");
+    if (!ok) return;
+
+    try {
+      await client.delete(`/events/${editingEventId}/`);
+      resetForm();
+      await loadEvents();
+    } catch (err) {
+      console.error("[Calendar] Failed to delete event:", err);
+      setError("Could not delete event. Please try again.");
     }
   };
 
@@ -264,26 +305,33 @@ const Calendar = () => {
     }
   };
 
-  const handleToday = () => {
-    const today = startOfDay(new Date());
-    setCurrentDate(today);
-    setSelectedDate(today);
-
-    // Prefill quick event for today (09:00–10:00)
-    const start = new Date(today);
-    start.setHours(9, 0, 0, 0);
-    const end = new Date(today);
-    end.setHours(10, 0, 0, 0);
+  const beginQuickSlot = (start, end) => {
+    setSelectedDate(startOfDay(start));
+    setCurrentDate(startOfDay(start));
+    setEditingEventId(null);
     setForm((prev) => ({
-      ...prev,
+      ...EMPTY_EVENT,
+      ...prev, // keep description/location if user already typed
       start: toLocalInputValue(start),
       end: toLocalInputValue(end),
     }));
   };
 
+  const handleToday = () => {
+    const today = startOfDay(new Date());
+    setCurrentDate(today);
+    setSelectedDate(today);
+
+    const start = new Date(today);
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(today);
+    end.setHours(10, 0, 0, 0);
+    beginQuickSlot(start, end);
+  };
+
   const handleViewChange = (nextView) => setView(nextView);
 
-  // Click on a date (month or week header) → go to that day + prefill form.
+  // Click on a date in grid → go to that day + prefill
   const handleDayClick = (date) => {
     const day = startOfDay(date);
     setSelectedDate(day);
@@ -294,46 +342,43 @@ const Calendar = () => {
     start.setHours(9, 0, 0, 0);
     const end = new Date(day);
     end.setHours(10, 0, 0, 0);
-    setForm((prev) => ({
-      ...prev,
-      start: toLocalInputValue(start),
-      end: toLocalInputValue(end),
-    }));
+    beginQuickSlot(start, end);
   };
 
-  // Double-click on a date in the month grid → also prefill form 09:00–10:00
+  // Double-click in month → quick new event
   const handleQuickNewForDate = (date) => {
     const day = startOfDay(date);
     const start = new Date(day);
     start.setHours(9, 0, 0, 0);
     const end = new Date(day);
     end.setHours(10, 0, 0, 0);
-
-    setSelectedDate(day);
-    setCurrentDate(day);
     setView("day");
-    setForm((prev) => ({
-      ...prev,
-      start: toLocalInputValue(start),
-      end: toLocalInputValue(end),
-    }));
+    beginQuickSlot(start, end);
   };
 
-  // Click on a specific hour slot in week view → prefill exact time
+  // Click on specific hour slot in week view → quick new event
   const handleTimeSlotClick = (date, hour) => {
     const day = startOfDay(date);
     const start = new Date(day);
     start.setHours(hour, 0, 0, 0);
     const end = new Date(start);
     end.setHours(hour + 1);
+    beginQuickSlot(start, end);
+  };
 
+  const handleEditEvent = (ev) => {
+    setEditingEventId(ev.id);
+    const day = startOfDay(ev._startDate);
     setSelectedDate(day);
     setCurrentDate(day);
-    setForm((prev) => ({
-      ...prev,
-      start: toLocalInputValue(start),
-      end: toLocalInputValue(end),
-    }));
+
+    setForm({
+      title: ev.title || "",
+      description: ev.description || "",
+      location: ev.location || "",
+      start: toLocalInputValue(ev._startDate),
+      end: toLocalInputValue(ev._endDate),
+    });
   };
 
   const monthLabel = useMemo(() => {
@@ -355,7 +400,7 @@ const Calendar = () => {
 
   const weekDays = useMemo(() => getWeekDays(currentDate), [currentDate]);
 
-  // Events that overlap a specific day (handles multi-day)
+  // multi-day event overlap
   const eventsForDate = (date) => {
     const dayStart = startOfDay(date);
     const dayEnd = endOfDay(date);
@@ -406,6 +451,8 @@ const Calendar = () => {
     return { channels, days, grid };
   }, [events, currentDate]);
 
+  /* ---------- Views ---------- */
+
   const renderMonthView = () => {
     const matrix = getMonthMatrix(currentDate);
     const weekDayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -443,27 +490,24 @@ const Calendar = () => {
                 >
                   <div className="calendar-day-number">{date.getDate()}</div>
                   <div className="calendar-day-events">
-                    {dayEvents.slice(0, 3).map((ev) => {
-                      const channel = getChannelSlug(ev);
-                      return (
-                        <div
-                          key={ev.id}
-                          className={
-                            "calendar-event-chip event-chip-" + channel
-                          }
-                          title={ev.title}
-                        >
-                          <span
-                            className={
-                              "calendar-event-dot event-dot-" + channel
-                            }
-                          />
-                          <span className="calendar-event-title">
-                            {ev.title}
-                          </span>
-                        </div>
-                      );
-                    })}
+                    {dayEvents.slice(0, 3).map((ev) => (
+                      <div
+                        key={ev.id}
+                        className={
+                          "calendar-event-chip " + getEventColorClass(ev)
+                        }
+                        title={ev.title}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditEvent(ev);
+                        }}
+                      >
+                        <span className="calendar-event-dot" />
+                        <span className="calendar-event-title">
+                          {ev.title}
+                        </span>
+                      </div>
+                    ))}
                     {dayEvents.length > 3 && (
                       <div className="calendar-more-events">
                         +{dayEvents.length - 3} more
@@ -536,9 +580,7 @@ const Calendar = () => {
                     />
                   ))}
                   {dayEvents.map((ev) => {
-                    const channel = getChannelSlug(ev);
-
-                    // clip multi-day events to this day column
+                    // clip multi-day events to this day
                     const dayStart = startOfDay(date);
                     const dayEnd = endOfDay(date);
                     const segmentStart =
@@ -563,10 +605,14 @@ const Calendar = () => {
                       <div
                         key={ev.id + date.toISOString()}
                         className={
-                          "calendar-event-block event-block-" + channel
+                          "calendar-event-block " + getEventColorClass(ev)
                         }
                         style={{ top, height }}
                         title={ev.title}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditEvent(ev);
+                        }}
                       >
                         <div className="calendar-event-block-title">
                           {ev.title}
@@ -617,38 +663,38 @@ const Calendar = () => {
           </div>
         ) : (
           <div className="calendar-day-events-list">
-            {dayEvents.map((ev) => {
-              const channel = getChannelSlug(ev);
-              return (
-                <div
-                  key={ev.id}
-                  className={"calendar-day-card day-card-" + channel}
-                >
-                  <div className="calendar-day-card-time">
-                    {ev._startDate.toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}{" "}
-                    –{" "}
-                    {ev._endDate.toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </div>
-                  <div className="calendar-day-card-title">{ev.title}</div>
-                  {ev.location && (
-                    <div className="calendar-day-card-location">
-                      <FaTag /> {ev.location}
-                    </div>
-                  )}
-                  {ev.description && (
-                    <div className="calendar-day-card-description">
-                      {ev.description}
-                    </div>
-                  )}
+            {dayEvents.map((ev) => (
+              <div
+                key={ev.id}
+                className={
+                  "calendar-day-card " + getEventColorClass(ev)
+                }
+                onClick={() => handleEditEvent(ev)}
+              >
+                <div className="calendar-day-card-time">
+                  {ev._startDate.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}{" "}
+                  –{" "}
+                  {ev._endDate.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
                 </div>
-              );
-            })}
+                <div className="calendar-day-card-title">{ev.title}</div>
+                {ev.location && (
+                  <div className="calendar-day-card-location">
+                    <FaTag /> {ev.location}
+                  </div>
+                )}
+                {ev.description && (
+                  <div className="calendar-day-card-description">
+                    {ev.description}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -674,38 +720,38 @@ const Calendar = () => {
                 })}
               </div>
               <div className="calendar-agenda-events">
-                {dayEvents.map((ev) => {
-                  const channel = getChannelSlug(ev);
-                  return (
-                    <div
-                      key={ev.id}
-                      className={"calendar-agenda-card agenda-card-" + channel}
-                    >
-                      <div className="calendar-agenda-time">
-                        {ev._startDate.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}{" "}
-                        –{" "}
-                        {ev._endDate.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </div>
-                      <div className="calendar-agenda-title">{ev.title}</div>
-                      {ev.location && (
-                        <div className="calendar-agenda-location">
-                          <FaTag /> {ev.location}
-                        </div>
-                      )}
-                      {ev.description && (
-                        <div className="calendar-agenda-description">
-                          {ev.description}
-                        </div>
-                      )}
+                {dayEvents.map((ev) => (
+                  <div
+                    key={ev.id}
+                    className={
+                      "calendar-agenda-card " + getEventColorClass(ev)
+                    }
+                    onClick={() => handleEditEvent(ev)}
+                  >
+                    <div className="calendar-agenda-time">
+                      {ev._startDate.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}{" "}
+                      –{" "}
+                      {ev._endDate.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </div>
-                  );
-                })}
+                    <div className="calendar-agenda-title">{ev.title}</div>
+                    {ev.location && (
+                      <div className="calendar-agenda-location">
+                        <FaTag /> {ev.location}
+                      </div>
+                    )}
+                    {ev.description && (
+                      <div className="calendar-agenda-description">
+                        {ev.description}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           ))
@@ -722,8 +768,8 @@ const Calendar = () => {
         <div className="calendar-marketing-header">
           <h3>Marketing schedule</h3>
           <p className="calendar-marketing-sub">
-            Lightweight board inspired by marketing calendars. Events are grouped
-            by channel based on their title and description.
+            Lightweight board inspired by marketing calendars. Events are
+            grouped by channel based on their title, description &amp; location.
           </p>
         </div>
         <div className="calendar-marketing-grid">
@@ -749,7 +795,6 @@ const Calendar = () => {
               {days.map((date) => {
                 const key = startOfDay(date).toISOString();
                 const cellEvents = grid[channel][key] || [];
-                const slug = channel.toLowerCase();
                 return (
                   <div
                     key={`${channel}-${key}`}
@@ -761,15 +806,13 @@ const Calendar = () => {
                           <div
                             key={ev.id}
                             className={
-                              "calendar-marketing-chip event-chip-" + slug
+                              "calendar-marketing-chip " +
+                              getEventColorClass(ev)
                             }
                             title={ev.title}
+                            onClick={() => handleEditEvent(ev)}
                           >
-                            <span
-                              className={
-                                "calendar-event-dot event-dot-" + slug
-                              }
-                            />
+                            <span className="calendar-event-dot" />
                             <span className="calendar-event-title">
                               {ev.title}
                             </span>
@@ -795,6 +838,8 @@ const Calendar = () => {
   };
 
   const todayEventsCount = eventsForDate(startOfDay(new Date())).length;
+
+  const isEditing = !!editingEventId;
 
   return (
     <div className="page page-calendar">
@@ -844,7 +889,7 @@ const Calendar = () => {
         </div>
       </div>
 
-      {/* Main layout: calendar + right sidebar */}
+      {/* Main layout: big calendar + right sidebar */}
       <div className="calendar-layout grid-2">
         <div className="card calendar-main">
           {loading && (
@@ -887,13 +932,17 @@ const Calendar = () => {
             <div className="calendar-card-header">
               <FaCalendarAlt />
               <div>
-                <div className="calendar-card-title">Quick event</div>
+                <div className="calendar-card-title">
+                  {isEditing ? "Edit event" : "Quick event"}
+                </div>
                 <div className="calendar-card-sub">
-                  Minimal friction to add something to your calendar.
+                  {isEditing
+                    ? "Update or delete the selected event."
+                    : "Minimal friction to add something to your calendar."}
                 </div>
               </div>
             </div>
-            <form className="calendar-form" onSubmit={handleCreateEvent}>
+            <form className="calendar-form" onSubmit={handleSubmitEvent}>
               <label className="field-label">
                 Title
                 <input
@@ -952,9 +1001,40 @@ const Calendar = () => {
                   placeholder="Optional details, links, agenda…"
                 />
               </label>
-              <button className="primary-btn" type="submit">
-                Save event
-              </button>
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  marginTop: 4,
+                }}
+              >
+                <button className="primary-btn" type="submit">
+                  {isEditing ? "Update event" : "Save event"}
+                </button>
+
+                {isEditing && (
+                  <>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={resetForm}
+                    >
+                      <FaUndo style={{ marginRight: 4 }} />
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={handleDeleteEvent}
+                      title="Delete event"
+                    >
+                      <FaTrash />
+                    </button>
+                  </>
+                )}
+              </div>
             </form>
           </section>
 
