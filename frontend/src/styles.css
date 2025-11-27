@@ -1376,6 +1376,120 @@ html,
 .page-calendar .calendar-hour-slot {
   cursor: pointer;
 }
+/* When the main app sidebar is OPEN: just show the big calendar,
+   hide the calendar right pane. */
+.sidebar-open + .app-main .page-calendar .calendar-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sidebar-open + .app-main .page-calendar .calendar-right-pane {
+  display: none;
+}
+
+/* When the main app sidebar is CLOSED: use a Fantastical-like
+   two-column layout with the extra side panel visible. */
+.sidebar-closed + .app-main .page-calendar .calendar-layout {
+  grid-template-columns: minmax(0, 2.2fr) minmax(260px, 0.9fr);
+}
+
+.sidebar-closed + .app-main .page-calendar .calendar-right-pane {
+  display: flex;
+}
+
+/* Base event chip style already defined – we only override per-channel */
+
+/* Month / marketing chips per channel */
+.page-calendar .event-chip-social {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.page-calendar .event-chip-email {
+  background: #ffe4f5;
+  color: #9d174d;
+}
+
+.page-calendar .event-chip-website {
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.page-calendar .event-chip-other {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* Dots (used in month + marketing) */
+.page-calendar .event-dot-social {
+  background: #2563eb;
+}
+
+.page-calendar .event-dot-email {
+  background: #ec4899;
+}
+
+.page-calendar .event-dot-website {
+  background: #22c55e;
+}
+
+.page-calendar .event-dot-other {
+  background: #f59e0b;
+}
+
+/* Week view blocks */
+.page-calendar .event-block-social {
+  background: #2563eb;
+  color: #f9fafb;
+}
+
+.page-calendar .event-block-email {
+  background: #db2777;
+  color: #fdf2f8;
+}
+
+.page-calendar .event-block-website {
+  background: #16a34a;
+  color: #ecfdf3;
+}
+
+.page-calendar .event-block-other {
+  background: #f97316;
+  color: #fffbeb;
+}
+
+/* Day cards – colored left border to match channel */
+.page-calendar .day-card-social {
+  border-left: 4px solid #2563eb;
+}
+
+.page-calendar .day-card-email {
+  border-left: 4px solid #db2777;
+}
+
+.page-calendar .day-card-website {
+  border-left: 4px solid #16a34a;
+}
+
+.page-calendar .day-card-other {
+  border-left: 4px solid #f97316;
+}
+
+/* Agenda cards – subtle top border per channel */
+.page-calendar .agenda-card-social {
+  border-top: 2px solid #2563eb;
+}
+
+.page-calendar .agenda-card-email {
+  border-top: 2px solid #db2777;
+}
+
+.page-calendar .agenda-card-website {
+  border-top: 2px solid #16a34a;
+}
+
+.page-calendar .agenda-card-other {
+  border-top: 2px solid #f97316;
+}
 
 /* Responsive tweaks for calendar */
 

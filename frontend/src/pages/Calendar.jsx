@@ -134,6 +134,10 @@ function classifyChannel(event) {
   return "Other";
 }
 
+function getChannelSlug(ev) {
+  return classifyChannel(ev).toLowerCase(); // "social" | "email" | "website" | "other"
+}
+
 // ---------- Pomodoro hook ----------
 
 function usePomodoro(initialMinutes = 25) {
@@ -330,7 +334,6 @@ const Calendar = () => {
       start: toLocalInputValue(start),
       end: toLocalInputValue(end),
     }));
-    // we stay in week view (so you still see the grid) but form is prefilled
   };
 
   const monthLabel = useMemo(() => {
@@ -352,7 +355,7 @@ const Calendar = () => {
 
   const weekDays = useMemo(() => getWeekDays(currentDate), [currentDate]);
 
-  // ---- FIXED: event overlap logic for multi-day events ----
+  // Events that overlap a specific day (handles multi-day)
   const eventsForDate = (date) => {
     const dayStart = startOfDay(date);
     const dayEnd = endOfDay(date);
@@ -361,7 +364,6 @@ const Calendar = () => {
       const evStart = ev._startDate;
       const evEnd = ev._endDate;
       if (!evStart || !evEnd) return false;
-      // Event overlaps this calendar day
       return evStart <= dayEnd && evEnd >= dayStart;
     });
   };
@@ -441,18 +443,27 @@ const Calendar = () => {
                 >
                   <div className="calendar-day-number">{date.getDate()}</div>
                   <div className="calendar-day-events">
-                    {dayEvents.slice(0, 3).map((ev) => (
-                      <div
-                        key={ev.id}
-                        className="calendar-event-chip"
-                        title={ev.title}
-                      >
-                        <span className="calendar-event-dot" />
-                        <span className="calendar-event-title">
-                          {ev.title}
-                        </span>
-                      </div>
-                    ))}
+                    {dayEvents.slice(0, 3).map((ev) => {
+                      const channel = getChannelSlug(ev);
+                      return (
+                        <div
+                          key={ev.id}
+                          className={
+                            "calendar-event-chip event-chip-" + channel
+                          }
+                          title={ev.title}
+                        >
+                          <span
+                            className={
+                              "calendar-event-dot event-dot-" + channel
+                            }
+                          />
+                          <span className="calendar-event-title">
+                            {ev.title}
+                          </span>
+                        </div>
+                      );
+                    })}
                     {dayEvents.length > 3 && (
                       <div className="calendar-more-events">
                         +{dayEvents.length - 3} more
@@ -525,7 +536,9 @@ const Calendar = () => {
                     />
                   ))}
                   {dayEvents.map((ev) => {
-                    // --- FIX: clip multi-day events to this day column ---
+                    const channel = getChannelSlug(ev);
+
+                    // clip multi-day events to this day column
                     const dayStart = startOfDay(date);
                     const dayEnd = endOfDay(date);
                     const segmentStart =
@@ -548,8 +561,10 @@ const Calendar = () => {
 
                     return (
                       <div
-                        key={ev.id + date.toISOString()} // same event may appear in multiple days
-                        className="calendar-event-block"
+                        key={ev.id + date.toISOString()}
+                        className={
+                          "calendar-event-block event-block-" + channel
+                        }
                         style={{ top, height }}
                         title={ev.title}
                       >
@@ -602,32 +617,38 @@ const Calendar = () => {
           </div>
         ) : (
           <div className="calendar-day-events-list">
-            {dayEvents.map((ev) => (
-              <div key={ev.id} className="calendar-day-card">
-                <div className="calendar-day-card-time">
-                  {ev._startDate.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}{" "}
-                  –{" "}
-                  {ev._endDate.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+            {dayEvents.map((ev) => {
+              const channel = getChannelSlug(ev);
+              return (
+                <div
+                  key={ev.id}
+                  className={"calendar-day-card day-card-" + channel}
+                >
+                  <div className="calendar-day-card-time">
+                    {ev._startDate.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}{" "}
+                    –{" "}
+                    {ev._endDate.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </div>
+                  <div className="calendar-day-card-title">{ev.title}</div>
+                  {ev.location && (
+                    <div className="calendar-day-card-location">
+                      <FaTag /> {ev.location}
+                    </div>
+                  )}
+                  {ev.description && (
+                    <div className="calendar-day-card-description">
+                      {ev.description}
+                    </div>
+                  )}
                 </div>
-                <div className="calendar-day-card-title">{ev.title}</div>
-                {ev.location && (
-                  <div className="calendar-day-card-location">
-                    <FaTag /> {ev.location}
-                  </div>
-                )}
-                {ev.description && (
-                  <div className="calendar-day-card-description">
-                    {ev.description}
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -653,32 +674,38 @@ const Calendar = () => {
                 })}
               </div>
               <div className="calendar-agenda-events">
-                {dayEvents.map((ev) => (
-                  <div key={ev.id} className="calendar-agenda-card">
-                    <div className="calendar-agenda-time">
-                      {ev._startDate.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}{" "}
-                      –{" "}
-                      {ev._endDate.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                {dayEvents.map((ev) => {
+                  const channel = getChannelSlug(ev);
+                  return (
+                    <div
+                      key={ev.id}
+                      className={"calendar-agenda-card agenda-card-" + channel}
+                    >
+                      <div className="calendar-agenda-time">
+                        {ev._startDate.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}{" "}
+                        –{" "}
+                        {ev._endDate.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                      <div className="calendar-agenda-title">{ev.title}</div>
+                      {ev.location && (
+                        <div className="calendar-agenda-location">
+                          <FaTag /> {ev.location}
+                        </div>
+                      )}
+                      {ev.description && (
+                        <div className="calendar-agenda-description">
+                          {ev.description}
+                        </div>
+                      )}
                     </div>
-                    <div className="calendar-agenda-title">{ev.title}</div>
-                    {ev.location && (
-                      <div className="calendar-agenda-location">
-                        <FaTag /> {ev.location}
-                      </div>
-                    )}
-                    {ev.description && (
-                      <div className="calendar-agenda-description">
-                        {ev.description}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))
@@ -722,6 +749,7 @@ const Calendar = () => {
               {days.map((date) => {
                 const key = startOfDay(date).toISOString();
                 const cellEvents = grid[channel][key] || [];
+                const slug = channel.toLowerCase();
                 return (
                   <div
                     key={`${channel}-${key}`}
@@ -732,10 +760,16 @@ const Calendar = () => {
                       : cellEvents.map((ev) => (
                           <div
                             key={ev.id}
-                            className="calendar-marketing-chip"
+                            className={
+                              "calendar-marketing-chip event-chip-" + slug
+                            }
                             title={ev.title}
                           >
-                            <span className="calendar-event-dot" />
+                            <span
+                              className={
+                                "calendar-event-dot event-dot-" + slug
+                              }
+                            />
                             <span className="calendar-event-title">
                               {ev.title}
                             </span>
