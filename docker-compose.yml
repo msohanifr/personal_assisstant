@@ -1,7 +1,5 @@
-version: '3.9'
-
 services:
-  db:
+  assistant_db_service:
     image: postgres:16-alpine
     container_name: assistant_db
     env_file:
@@ -17,11 +15,11 @@ services:
     env_file:
       - .env
     depends_on:
-      - db
+      - assistant_db_service
     volumes:
       - ./backend:/app
     ports:
-      - "8000:8000"
+      - "8001:8000"   # host:container
 
   frontend:
     build: ./frontend
@@ -32,7 +30,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - VITE_API_BASE_URL=http://localhost:8000/api
+      - VITE_API_BASE_URL=http://localhost:8001/api
     ports:
       - "5173:5173"
 

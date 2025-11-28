@@ -57,7 +57,7 @@ DATABASES = {
         "NAME": os.getenv("POSTGRES_DB", "assistant_db"),
         "USER": os.getenv("POSTGRES_USER", "assistant_user"),
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "assistant_pass"),
-        "HOST": os.getenv("POSTGRES_HOST", "db"),
+        "HOST": os.getenv("POSTGRES_HOST", "assistant_db_service"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
     }
 }
