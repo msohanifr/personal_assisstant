@@ -18,6 +18,7 @@ const Tasks = () => {
   const [dragIndex, setDragIndex] = useState(null);
   const [groupMode, setGroupMode] = useState("day"); // "day" | "week" | "month"
   const [editingTaskId, setEditingTaskId] = useState(null);
+  const [viewMode, setViewMode] = useState("calendar"); // "calendar" | "kanban"
 
   const [relatedNotes, setRelatedNotes] = useState([]);
   const [relatedNotesError, setRelatedNotesError] = useState("");
@@ -33,6 +34,9 @@ const Tasks = () => {
 
   // --- Delete state ---
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // --- Form visibility ---
+  const [isFormOpen, setIsFormOpen] = useState(false);
 
   // ----------------------------
   // Load tasks
@@ -119,7 +123,6 @@ const Tasks = () => {
       const day = pad(d.getDate());
       const hours = pad(d.getHours());
       const minutes = pad(d.getMinutes());
-      // datetime-local expects "YYYY-MM-DDTHH:MM"
       return `${year}-${month}-${day}T${hours}:${minutes}`;
     } catch (err) {
       console.error("[Tasks] Error converting due_date to input format:", err, value);
@@ -136,8 +139,18 @@ const Tasks = () => {
     setRelatedNotesError("");
   };
 
+  const closeForm = () => {
+    console.debug("[Tasks] Closing form (back to view-only)");
+    setEditingTaskId(null);
+    setForm(emptyTask);
+    setError("");
+    setRelatedNotes([]);
+    setRelatedNotesError("");
+    setIsFormOpen(false);
+  };
+
   // ----------------------------
-  // Create / Update task
+  // Create / Update task (form)
   // ----------------------------
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -167,12 +180,12 @@ const Tasks = () => {
         console.debug("[Tasks] Creating task with payload:", payload);
         const res = await client.post("/tasks/", payload);
         console.debug("[Tasks] Task created:", res.data);
-        setForm(emptyTask);
-        setEditingTaskId(null);
-        setRelatedNotes([]);
-        setRelatedNotesError("");
+
         // Reload to re-apply global sorting
-        loadTasks();
+        await loadTasks();
+
+        // Go back to view-only mode
+        closeForm();
       } else {
         // UPDATE
         console.debug(
@@ -188,14 +201,8 @@ const Tasks = () => {
           prev.map((t) => (t.id === editingTaskId ? res.data : t))
         );
 
-        const taskTagIds = resolveTaskTagIds(res.data);
-        setForm({
-          title: res.data.title || "",
-          description: res.data.description || "",
-          status: res.data.status || "todo",
-          due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
-          tag_ids: taskTagIds,
-        });
+        // After saving edits, go back to view-only mode
+        closeForm();
       }
     } catch (err) {
       console.error("[Tasks] Error saving task:", err);
@@ -215,6 +222,43 @@ const Tasks = () => {
         }
       } else {
         setError("Network error while saving task. Check console for details.");
+      }
+    }
+  };
+
+  // ----------------------------
+  // Update task from Kanban (inline or drag)
+  // ----------------------------
+  const handleKanbanUpdateTask = async (taskId, updates) => {
+    setError("");
+    try {
+      console.debug("[Tasks] Kanban updating task", taskId, "with", updates);
+      const res = await client.patch(`/tasks/${taskId}/`, updates);
+      console.debug("[Tasks] Task updated via Kanban:", res.data);
+
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? res.data : t)));
+
+      if (editingTaskId === taskId) {
+        const taskTagIds = resolveTaskTagIds(res.data);
+        setForm({
+          title: res.data.title || "",
+          description: res.data.description || "",
+          status: res.data.status || "todo",
+          due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
+          tag_ids: taskTagIds,
+        });
+      }
+    } catch (err) {
+      console.error("[Tasks] Error updating task from Kanban:", err);
+      if (err.response) {
+        const { status, data } = err.response;
+        setError(
+          `Error ${status} while updating task: ${
+            typeof data === "string" ? data : JSON.stringify(data)
+          }`
+        );
+      } else {
+        setError("Network error while updating task. Check console for details.");
       }
     }
   };
@@ -242,9 +286,9 @@ const Tasks = () => {
 
       setTasks((prev) => prev.filter((t) => t.id !== id));
 
-      // If we just deleted the currently edited task, reset the form
+      // If we just deleted the currently edited task, close the form
       if (editingTaskId === id) {
-        resetToNewTask();
+        closeForm();
       }
     } catch (err) {
       console.error("[Tasks] Error deleting task:", err);
@@ -352,7 +396,7 @@ const Tasks = () => {
   };
 
   // ----------------------------
-  // Drag & drop (front-end only)
+  // Drag & drop (calendar list view only)
   // ----------------------------
   const handleDragStart = (e, index) => {
     console.debug("[Tasks] Drag start at index:", index);
@@ -398,7 +442,7 @@ const Tasks = () => {
     setDragIndex(null);
   };
 
-  const handleDragEnd = () => {
+  const handleDragEndList = () => {
     console.debug("[Tasks] Drag end");
     setDragIndex(null);
   };
@@ -564,18 +608,13 @@ const Tasks = () => {
   };
 
   // ----------------------------
-  // Grouped & filtered tasks
+  // Filtered tasks (search + tags)
   // ----------------------------
-  const grouped = useMemo(() => {
-    console.debug("[Tasks] Computing grouped tasks for mode:", groupMode);
-
+  const filteredTasks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const groupsMap = new Map();
-    const noDateKey = "no_date";
+    if (!q) return tasks;
 
-    const filteredTasks = tasks.filter((task) => {
-      if (!q) return true;
-
+    return tasks.filter((task) => {
       const title = (task.title || "").toLowerCase();
       const description = (task.description || "").toLowerCase();
       const taskTags = resolveTaskTags(task);
@@ -587,6 +626,16 @@ const Tasks = () => {
         (tagText && tagText.includes(q))
       );
     });
+  }, [tasks, searchQuery, allTags]);
+
+  // ----------------------------
+  // Grouped tasks for "calendar" view
+  // ----------------------------
+  const grouped = useMemo(() => {
+    console.debug("[Tasks] Computing grouped tasks for mode:", groupMode);
+
+    const groupsMap = new Map();
+    const noDateKey = "no_date";
 
     filteredTasks.forEach((task, idx) => {
       const raw = task.due_date;
@@ -645,7 +694,7 @@ const Tasks = () => {
     );
 
     return groupsArr;
-  }, [tasks, groupMode, searchQuery, allTags]);
+  }, [filteredTasks, groupMode]);
 
   // ----------------------------
   // Select task for editing
@@ -664,6 +713,7 @@ const Tasks = () => {
     });
     setError("");
     loadRelatedNotes(task.id);
+    setIsFormOpen(true);
   };
 
   // ----------------------------
@@ -673,228 +723,231 @@ const Tasks = () => {
     <div className="page page-tasks">
       <h2 className="page-title">Tasks</h2>
 
-      {/* Full-width form card */}
-      <div className="card form-card">
-        <form onSubmit={handleSubmit}>
-          <div className="flex items-center justify-between">
-            <h3 className="card-title">
-              {editingTaskId ? "Edit task" : "Add task"}
-            </h3>
-            {editingTaskId && (
+      {/* Full-width form card (hidden until adding/editing) */}
+      {isFormOpen && (
+        <div className="card form-card">
+          <form onSubmit={handleSubmit}>
+            <div className="flex items-center justify-between">
+              <h3 className="card-title">
+                {editingTaskId ? "Edit task" : "Add task"}
+              </h3>
               <div className="flex gap-2">
                 <button
                   type="button"
                   className="secondary-btn"
-                  onClick={resetToNewTask}
+                  onClick={closeForm}
                 >
-                  New task
+                  Cancel
                 </button>
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  style={{
-                    borderColor: "#fecaca",
-                    color: "#b91c1c",
-                    background: "#fef2f2",
-                  }}
-                  disabled={isDeleting}
-                  onClick={() => handleDeleteTask(editingTaskId)}
-                >
-                  {isDeleting ? "Deleting…" : "Delete"}
-                </button>
+                {editingTaskId && (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    style={{
+                      borderColor: "#fecaca",
+                      color: "#b91c1c",
+                      background: "#fef2f2",
+                    }}
+                    disabled={isDeleting}
+                    onClick={() => handleDeleteTask(editingTaskId)}
+                  >
+                    {isDeleting ? "Deleting…" : "Delete"}
+                  </button>
+                )}
               </div>
-            )}
-          </div>
-
-          <label className="field-label">
-            Title
-            <input
-              className="field-input"
-              name="title"
-              value={form.title}
-              onChange={handleChange}
-              required
-            />
-          </label>
-
-          <label className="field-label">
-            Description
-            <textarea
-              className="field-input"
-              name="description"
-              value={form.description}
-              onChange={handleChange}
-              rows={3}
-            />
-          </label>
-
-          <label className="field-label">
-            Status
-            <select
-              className="field-input"
-              name="status"
-              value={form.status}
-              onChange={handleChange}
-            >
-              <option value="todo">To Do</option>
-              <option value="in_progress">In Progress</option>
-              <option value="done">Done</option>
-            </select>
-          </label>
-
-          <label className="field-label">
-            Due date
-            <input
-              className="field-input"
-              type="datetime-local"
-              name="due_date"
-              value={form.due_date}
-              onChange={handleChange}
-            />
-          </label>
-
-          {/* Tags selector */}
-          <div className="field-label" style={{ marginTop: "0.75rem" }}>
-            <div className="flex items-center justify-between">
-              <span>Tags</span>
             </div>
-            {tagError && <p className="error-text mt-1">{tagError}</p>}
-            {!allTags.length && !tagError && (
-              <p className="muted text-xs mt-1">
-                No tags yet. Create your first tag below (e.g. "Important", "Work", "Personal").
-              </p>
-            )}
-            {allTags.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-1">
-                {allTags.map((tag) => {
-                  const isSelected = form.tag_ids?.includes(tag.id);
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      onClick={() => toggleTagOnForm(tag.id)}
-                      className="badge"
-                      style={{
-                        borderRadius: "999px",
-                        border: isSelected
-                          ? "1px solid #f97316"
-                          : "1px solid #e2e8f0",
-                        backgroundColor: isSelected
-                          ? tag.color || "#fff7ed"
-                          : "#f8fafc",
-                        padding: "2px 10px",
-                        fontSize: "0.75rem",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "999px",
-                          backgroundColor: tag.color || "#f97316",
-                        }}
-                      />
-                      <span>{tag.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
 
-          {error && <p className="error-text mt-2">{error}</p>}
+            <label className="field-label">
+              Title
+              <input
+                className="field-input"
+                name="title"
+                value={form.title}
+                onChange={handleChange}
+                required
+              />
+            </label>
 
-          <button className="primary-btn mt-3" type="submit">
-            {editingTaskId ? "Update" : "Save"}
-          </button>
-        </form>
+            <label className="field-label">
+              Description
+              <textarea
+                className="field-input"
+                name="description"
+                value={form.description}
+                onChange={handleChange}
+                rows={3}
+              />
+            </label>
 
-        {/* Related notes for selected task */}
-        {editingTaskId && (
-          <div className="mt-4">
-            <div className="flex items-center justify-between">
-              <h4
-                className="text-sm font-medium"
-                style={{ margin: 0, padding: 0 }}
+            <label className="field-label">
+              Status
+              <select
+                className="field-input"
+                name="status"
+                value={form.status}
+                onChange={handleChange}
               >
-                Related notes
-              </h4>
-            </div>
-            {relatedNotesError && (
-              <p className="error-text mt-1">{relatedNotesError}</p>
-            )}
-            {!relatedNotesError && relatedNotes.length === 0 && (
-              <p className="muted text-xs mt-1">
-                No notes attached to this task yet.
-              </p>
-            )}
-            {relatedNotes.length > 0 && (
-              <ul className="list mt-2">
-                {relatedNotes.map((n) => (
-                  <li key={n.id} className="card" style={{ marginBottom: 6 }}>
-                    <div className="font-medium">{n.title}</div>
-                    <div className="muted text-xs">
-                      {n.job && <span>{n.job} · </span>}
-                      {n.note_type === "daily" ? "Daily note" : "General"}
-                    </div>
-                    <p className="mt-1 text-sm line-clamp-2">{n.content}</p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+                <option value="todo">To Do</option>
+                <option value="in_progress">In Progress</option>
+                <option value="done">Done</option>
+              </select>
+            </label>
 
-        {/* Create new tag */}
-        <div
-          className="mt-4"
-          style={{
-            marginTop: "1.5rem",
-            paddingTop: "1rem",
-            borderTop: "1px solid #e5e7eb",
-          }}
-        >
-          <h4
-            className="text-sm font-medium"
-            style={{ margin: 0, marginBottom: "0.5rem" }}
-          >
-            Create new tag
-          </h4>
-          <form
-            onSubmit={handleCreateTag}
-            className="flex items-center gap-2"
-          >
-            <input
-              className="field-input"
-              placeholder='e.g. "Important" or "Work"'
-              value={tagFormName}
-              onChange={(e) => setTagFormName(e.target.value)}
-            />
-            <input
-              type="color"
-              value={tagFormColor}
-              onChange={(e) => setTagFormColor(e.target.value)}
-              style={{
-                width: 40,
-                height: 32,
-                padding: 0,
-                borderRadius: 8,
-                border: "1px solid #e2e8f0",
-              }}
-              title="Tag color"
-            />
-            <button type="submit" className="secondary-btn">
-              Add
+            <label className="field-label">
+              Due date
+              <input
+                className="field-input"
+                type="datetime-local"
+                name="due_date"
+                value={form.due_date}
+                onChange={handleChange}
+              />
+            </label>
+
+            {/* Tags selector */}
+            <div className="field-label" style={{ marginTop: "0.75rem" }}>
+              <div className="flex items-center justify-between">
+                <span>Tags</span>
+              </div>
+              {tagError && <p className="error-text mt-1">{tagError}</p>}
+              {!allTags.length && !tagError && (
+                <p className="muted text-xs mt-1">
+                  No tags yet. Create your first tag below (e.g. "Important", "Work",
+                  "Personal").
+                </p>
+              )}
+              {allTags.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {allTags.map((tag) => {
+                    const isSelected = form.tag_ids?.includes(tag.id);
+                    return (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        onClick={() => toggleTagOnForm(tag.id)}
+                        className="badge"
+                        style={{
+                          borderRadius: "999px",
+                          border: isSelected
+                            ? "1px solid #f97316"
+                            : "1px solid #e2e8f0",
+                          backgroundColor: isSelected
+                            ? tag.color || "#fff7ed"
+                            : "#f8fafc",
+                          padding: "2px 10px",
+                          fontSize: "0.75rem",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "999px",
+                            backgroundColor: tag.color || "#f97316",
+                          }}
+                        />
+                        <span>{tag.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {error && <p className="error-text mt-2">{error}</p>}
+
+            <button className="primary-btn mt-3" type="submit">
+              {editingTaskId ? "Update" : "Save"}
             </button>
           </form>
-        </div>
-      </div>
 
-      {/* Full-width tasks list card */}
+          {/* Related notes for selected task */}
+          {editingTaskId && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between">
+                <h4
+                  className="text-sm font-medium"
+                  style={{ margin: 0, padding: 0 }}
+                >
+                  Related notes
+                </h4>
+              </div>
+              {relatedNotesError && (
+                <p className="error-text mt-1">{relatedNotesError}</p>
+              )}
+              {!relatedNotesError && relatedNotes.length === 0 && (
+                <p className="muted text-xs mt-1">
+                  No notes attached to this task yet.
+                </p>
+              )}
+              {relatedNotes.length > 0 && (
+                <ul className="list mt-2">
+                  {relatedNotes.map((n) => (
+                    <li key={n.id} className="card" style={{ marginBottom: 6 }}>
+                      <div className="font-medium">{n.title}</div>
+                      <div className="muted text-xs">
+                        {n.job && <span>{n.job} · </span>}
+                        {n.note_type === "daily" ? "Daily note" : "General"}
+                      </div>
+                      <p className="mt-1 text-sm line-clamp-2">{n.content}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Create new tag */}
+          <div
+            className="mt-4"
+            style={{
+              marginTop: "1.5rem",
+              paddingTop: "1rem",
+              borderTop: "1px solid #e5e7eb",
+            }}
+          >
+            <h4
+              className="text-sm font-medium"
+              style={{ margin: 0, marginBottom: "0.5rem" }}
+            >
+              Create new tag
+            </h4>
+            <form
+              onSubmit={handleCreateTag}
+              className="flex items-center gap-2"
+            >
+              <input
+                className="field-input"
+                placeholder='e.g. "Important" or "Work"'
+                value={tagFormName}
+                onChange={(e) => setTagFormName(e.target.value)}
+              />
+              <input
+                type="color"
+                value={tagFormColor}
+                onChange={(e) => setTagFormColor(e.target.value)}
+                style={{
+                  width: 40,
+                  height: 32,
+                  padding: 0,
+                  borderRadius: 8,
+                  border: "1px solid #e2e8f0",
+                }}
+                title="Tag color"
+              />
+              <button type="submit" className="secondary-btn">
+                Add
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* View toggle + search + mode-specific UI */}
       <div className="card tasks-list-card" style={{ marginTop: "1.5rem" }}>
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -905,208 +958,693 @@ const Tasks = () => {
           </div>
 
           <div className="flex flex-col items-end gap-2">
-            {/* Search */}
-            <input
-              type="text"
-              className="field-input"
-              placeholder="Search by title, description, or tag…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ maxWidth: 260 }}
-            />
+            <div className="flex gap-2">
+              {/* Add task button */}
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={() => {
+                  resetToNewTask();
+                  setIsFormOpen(true);
+                }}
+              >
+                + Add task
+              </button>
 
-            {/* Group mode toggle */}
+              {/* Search */}
+              <input
+                type="text"
+                className="field-input"
+                placeholder="Search by title, description, or tag…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ maxWidth: 260 }}
+              />
+            </div>
+
+            {/* View mode toggle: Calendar vs Kanban */}
             <div className="calendar-view-toggle">
               <button
                 type="button"
                 className={
                   "toggle-btn" +
-                  (groupMode === "day" ? " toggle-btn-active" : "")
+                  (viewMode === "calendar" ? " toggle-btn-active" : "")
                 }
-                onClick={() => handleGroupModeChange("day")}
+                onClick={() => setViewMode("calendar")}
               >
-                Day
+                Calendar view
               </button>
               <button
                 type="button"
                 className={
                   "toggle-btn" +
-                  (groupMode === "week" ? " toggle-btn-active" : "")
+                  (viewMode === "kanban" ? " toggle-btn-active" : "")
                 }
-                onClick={() => handleGroupModeChange("week")}
+                onClick={() => setViewMode("kanban")}
               >
-                Week
-              </button>
-              <button
-                type="button"
-                className={
-                  "toggle-btn" +
-                  (groupMode === "month" ? " toggle-btn-active" : "")
-                }
-                onClick={() => handleGroupModeChange("month")}
-              >
-                Month
+                Kanban view
               </button>
             </div>
+
+            {/* Group mode toggle (only when in calendar view) */}
+            {viewMode === "calendar" && (
+              <div className="calendar-view-toggle">
+                <button
+                  type="button"
+                  className={
+                    "toggle-btn" +
+                    (groupMode === "day" ? " toggle-btn-active" : "")
+                  }
+                  onClick={() => handleGroupModeChange("day")}
+                >
+                  Day
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "toggle-btn" +
+                    (groupMode === "week" ? " toggle-btn-active" : "")
+                  }
+                  onClick={() => handleGroupModeChange("week")}
+                >
+                  Week
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "toggle-btn" +
+                    (groupMode === "month" ? " toggle-btn-active" : "")
+                  }
+                  onClick={() => handleGroupModeChange("month")}
+                >
+                  Month
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        <ul className="list mt-3">
-          {grouped.map((group) => (
-            <li key={group.key} style={{ marginBottom: 8 }}>
-              <div
-                className="muted text-xs"
-                style={{
-                  textTransform: "uppercase",
-                  letterSpacing: "0.04em",
-                  marginBottom: 4,
-                }}
-              >
-                {group.label}
-              </div>
-              <ul className="list">
-                {group.items.map(({ task: t, index }) => {
-                  const isDone = t.status === "done";
-                  const dueLabel = formatDueDate(t.due_date);
-                  const isSelected = editingTaskId === t.id;
-                  const taskTags = resolveTaskTags(t);
+        {/* CALENDAR / GROUPED LIST VIEW */}
+        {viewMode === "calendar" && (
+          <ul className="list mt-3">
+            {grouped.map((group) => (
+              <li key={group.key} style={{ marginBottom: 8 }}>
+                <div
+                  className="muted text-xs"
+                  style={{
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    marginBottom: 4,
+                  }}
+                >
+                  {group.label}
+                </div>
+                <ul className="list">
+                  {group.items.map(({ task: t, index }) => {
+                    const isDone = t.status === "done";
+                    const dueLabel = formatDueDate(t.due_date);
+                    const isSelected = editingTaskId === t.id;
+                    const taskTags = resolveTaskTags(t);
 
-                  return (
-                    <li
-                      key={t.id}
-                      className="flex items-center justify-between gap-4"
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, index)}
-                      onDragOver={(e) => handleDragOver(e, index)}
-                      onDrop={(e) => handleDrop(e, index)}
-                      onDragEnd={handleDragEnd}
-                      onClick={() => handleSelectTask(t)}
-                      style={{
-                        padding: "6px 4px",
-                        borderRadius: "12px",
-                        border:
-                          dragIndex === index
-                            ? "1px dashed #f59e0b"
-                            : isSelected
-                            ? "1px solid #f97316"
-                            : "1px solid transparent",
-                        backgroundColor:
-                          dragIndex === index
-                            ? "#fffbeb"
-                            : isSelected
-                            ? "#fff7ed"
-                            : "transparent",
-                      }}
-                    >
-                      {/* Left: drag handle */}
-                      <div
-                        className="task-handle"
+                    return (
+                      <li
+                        key={t.id}
+                        className="flex items-center justify-between gap-4"
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, index)}
+                        onDragOver={(e) => handleDragOver(e, index)}
+                        onDrop={(e) => handleDrop(e, index)}
+                        onDragEnd={handleDragEndList}
+                        onClick={() => handleSelectTask(t)}
                         style={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 999,
-                          border: "1px solid #e2e8f0",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          cursor: "grab",
-                          backgroundColor: "white",
+                          padding: "6px 4px",
+                          borderRadius: "12px",
+                          border:
+                            dragIndex === index
+                              ? "1px dashed #f59e0b"
+                              : isSelected
+                              ? "1px solid #f97316"
+                              : "1px solid transparent",
+                          backgroundColor:
+                            dragIndex === index
+                              ? "#fffbeb"
+                              : isSelected
+                              ? "#fff7ed"
+                              : "transparent",
                         }}
-                        onClick={(e) => e.stopPropagation()}
                       >
-                        <FaGripLines className="muted" />
-                      </div>
-
-                      {/* Middle: checkbox + content */}
-                      <div
-                        className="flex items-start gap-4"
-                        style={{ flex: 1, marginLeft: 8 }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isDone}
-                          onChange={() => handleToggleDone(t, index)}
+                        {/* Left: drag handle */}
+                        <div
+                          className="task-handle"
+                          style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 999,
+                            border: "1px solid #e2e8f0",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "grab",
+                            backgroundColor: "white",
+                          }}
                           onClick={(e) => e.stopPropagation()}
-                          style={{ marginTop: 4 }}
-                        />
-                        <div>
-                          <div
-                            className="font-medium"
+                        >
+                          <FaGripLines className="muted" />
+                        </div>
+
+                        {/* Middle: checkbox + content */}
+                        <div
+                          className="flex items-start gap-4"
+                          style={{ flex: 1, marginLeft: 8 }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isDone}
+                            onChange={() => handleToggleDone(t, index)}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ marginTop: 4 }}
+                          />
+                          <div>
+                            <div
+                              className="font-medium"
+                              style={{
+                                textDecoration: isDone ? "line-through" : "none",
+                                opacity: isDone ? 0.6 : 1,
+                              }}
+                            >
+                              {t.title}
+                            </div>
+                            {t.description && (
+                              <div className="muted text-xs line-clamp-2">
+                                {t.description}
+                              </div>
+                            )}
+                            <div className="muted text-xs mt-1">
+                              <strong>Due:</strong> {dueLabel}
+                            </div>
+
+                            {/* Task tags display */}
+                            {taskTags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {taskTags.map((tag) => (
+                                  <span
+                                    key={tag.id}
+                                    className="badge"
+                                    style={{
+                                      borderRadius: 999,
+                                      padding: "1px 8px",
+                                      fontSize: "0.7rem",
+                                      backgroundColor:
+                                        tag.color || "#f3f4f6",
+                                      border: "1px solid #e5e7eb",
+                                    }}
+                                  >
+                                    {tag.name}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Right: status + inline delete */}
+                        <div className="flex items-center gap-2">
+                          <span className={`badge badge-${t.status}`}>
+                            {t.status.replace("_", " ")}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-xs"
                             style={{
-                              textDecoration: isDone ? "line-through" : "none",
-                              opacity: isDone ? 0.6 : 1,
+                              border: "none",
+                              background: "transparent",
+                              color: "#b91c1c",
+                              cursor: "pointer",
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTask(t.id);
                             }}
                           >
-                            {t.title}
-                          </div>
-                          {t.description && (
-                            <div className="muted text-xs line-clamp-2">
-                              {t.description}
-                            </div>
-                          )}
-                          <div className="muted text-xs mt-1">
-                            <strong>Due:</strong> {dueLabel}
-                          </div>
-
-                          {/* Task tags display */}
-                          {taskTags.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {taskTags.map((tag) => (
-                                <span
-                                  key={tag.id}
-                                  className="badge"
-                                  style={{
-                                    borderRadius: 999,
-                                    padding: "1px 8px",
-                                    fontSize: "0.7rem",
-                                    backgroundColor:
-                                      tag.color || "#f3f4f6",
-                                    border: "1px solid #e5e7eb",
-                                  }}
-                                >
-                                  {tag.name}
-                                </span>
-                              ))}
-                            </div>
-                          )}
+                            delete
+                          </button>
                         </div>
-                      </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </li>
+            ))}
+            {!tasks.length && !error && (
+              <li className="muted">No tasks yet.</li>
+            )}
+            {tasks.length > 0 && grouped.length === 0 && (
+              <li className="muted">No tasks match your search.</li>
+            )}
+          </ul>
+        )}
 
-                      {/* Right: status + inline delete */}
-                      <div className="flex items-center gap-2">
-                        <span className={`badge badge-${t.status}`}>
-                          {t.status.replace("_", " ")}
-                        </span>
-                        <button
-                          type="button"
-                          className="text-xs"
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            color: "#b91c1c",
-                            cursor: "pointer",
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteTask(t.id);
-                          }}
-                        >
-                          delete
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </li>
-          ))}
-          {!tasks.length && !error && (
-            <li className="muted">No tasks yet.</li>
-          )}
-          {tasks.length > 0 && grouped.length === 0 && (
-            <li className="muted">No tasks match your search.</li>
-          )}
-        </ul>
+        {/* KANBAN VIEW */}
+        {viewMode === "kanban" && (
+          <div className="mt-3">
+            <KanbanBoard
+              tasks={filteredTasks}
+              resolveTaskTags={resolveTaskTags}
+              formatDueDate={formatDueDate}
+              onUpdateTask={handleKanbanUpdateTask}
+              onDeleteTask={handleDeleteTask}
+            />
+            {!tasks.length && !error && (
+              <p className="muted mt-2">No tasks yet.</p>
+            )}
+            {tasks.length > 0 && filteredTasks.length === 0 && (
+              <p className="muted mt-2">No tasks match your search.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* -----------------------------
+ * KANBAN COMPONENTS & COLORS
+ * ----------------------------- */
+
+const STATUS_COLORS = {
+  todo: {
+    bg: "#eff6ff",
+    border: "#bfdbfe",
+    text: "#1d4ed8",
+  },
+  in_progress: {
+    bg: "#fef3c7",
+    border: "#facc15",
+    text: "#92400e",
+  },
+  done: {
+    bg: "#dcfce7",
+    border: "#4ade80",
+    text: "#166534",
+  },
+};
+
+// Turn a hex color into a soft, very light background
+function hexToSoftBackground(hex) {
+  if (!hex || typeof hex !== "string" || !hex.startsWith("#")) {
+    return "#f9fafb";
+  }
+
+  let r = 240,
+    g = 244,
+    b = 250; // default slate-50
+
+  try {
+    const clean = hex.slice(1);
+    const expanded =
+      clean.length === 3
+        ? clean
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : clean;
+    const bigint = parseInt(expanded, 16);
+
+    r = (bigint >> 16) & 255;
+    g = (bigint >> 8) & 255;
+    b = bigint & 255;
+  } catch (e) {
+    return "#f9fafb";
+  }
+
+  // Mix with white to make it very soft (2/3 white, 1/3 color)
+  const mix = (c) => Math.round((c + 255 * 2) / 3);
+
+  const rr = mix(r);
+  const gg = mix(g);
+  const bb = mix(b);
+
+  return `rgb(${rr}, ${gg}, ${bb})`;
+}
+
+const KANBAN_COLUMNS = [
+  { key: "todo", label: "To Do" },
+  { key: "in_progress", label: "In Progress" },
+  { key: "done", label: "Done" },
+];
+
+const KanbanBoard = ({
+  tasks,
+  resolveTaskTags,
+  formatDueDate,
+  onUpdateTask,
+  onDeleteTask,
+}) => {
+  const [dragTaskId, setDragTaskId] = useState(null);
+
+  const columns = useMemo(() => {
+    const grouped = {
+      todo: [],
+      in_progress: [],
+      done: [],
+    };
+
+    tasks.forEach((task) => {
+      const status = task.status || "todo";
+      if (!grouped[status]) {
+        grouped.todo.push(task);
+      } else {
+        grouped[status].push(task);
+      }
+    });
+
+    return grouped;
+  }, [tasks]);
+
+  const handleCardDragStart = (taskId) => {
+    setDragTaskId(taskId);
+  };
+
+  const handleColumnDrop = (status) => {
+    if (!dragTaskId) return;
+    const task = tasks.find((t) => t.id === dragTaskId);
+    if (!task) {
+      setDragTaskId(null);
+      return;
+    }
+
+    const currentStatus = task.status || "todo";
+    if (currentStatus === status) {
+      setDragTaskId(null);
+      return;
+    }
+
+    onUpdateTask(task.id, { status });
+    setDragTaskId(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragTaskId(null);
+  };
+
+  return (
+    <div className="kanban-board">
+      {KANBAN_COLUMNS.map((col) => (
+        <KanbanColumn
+          key={col.key}
+          title={col.label}
+          status={col.key}
+          tasks={columns[col.key] || []}
+          resolveTaskTags={resolveTaskTags}
+          formatDueDate={formatDueDate}
+          onUpdateTask={onUpdateTask}
+          onDeleteTask={onDeleteTask}
+          onCardDragStart={handleCardDragStart}
+          onColumnDrop={handleColumnDrop}
+          onCardDragEnd={handleDragEnd}
+          isActiveDropTarget={dragTaskId != null}
+        />
+      ))}
+    </div>
+  );
+};
+
+const KanbanColumn = ({
+  title,
+  status,
+  tasks,
+  resolveTaskTags,
+  formatDueDate,
+  onUpdateTask,
+  onDeleteTask,
+  onCardDragStart,
+  onColumnDrop,
+  onCardDragEnd,
+  isActiveDropTarget,
+}) => {
+  const theme = STATUS_COLORS[status] || STATUS_COLORS.todo;
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    onColumnDrop(status);
+  };
+
+  return (
+    <div
+      className="kanban-column"
+      style={{
+        backgroundColor: "#f9fafb",
+        borderColor: theme.border,
+      }}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <div className="kanban-column__header">
+        <h2>{title}</h2>
+        <span
+          className="kanban-column__count"
+          style={{
+            backgroundColor: theme.bg,
+            color: theme.text,
+          }}
+        >
+          {tasks.length}
+        </span>
+      </div>
+      <div
+        className="kanban-column__body"
+        style={{
+          outline: isActiveDropTarget ? "1px dashed rgba(148,163,184,0.6)" : "none",
+          outlineOffset: 4,
+          transition: "outline 0.15s ease-out",
+        }}
+      >
+        {tasks.map((task) => (
+          <KanbanCard
+            key={task.id}
+            task={task}
+            columnStatus={status}
+            resolveTaskTags={resolveTaskTags}
+            formatDueDate={formatDueDate}
+            onUpdateTask={onUpdateTask}
+            onDeleteTask={onDeleteTask}
+            onCardDragStart={onCardDragStart}
+            onCardDragEnd={onCardDragEnd}
+          />
+        ))}
+        {tasks.length === 0 && (
+          <p className="muted text-xs mt-1">No tasks in this column.</p>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const KanbanCard = ({
+  task,
+  columnStatus,
+  resolveTaskTags,
+  formatDueDate,
+  onUpdateTask,
+  onDeleteTask,
+  onCardDragStart,
+  onCardDragEnd,
+}) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(task.title || "");
+  const [draftDescription, setDraftDescription] = useState(
+    task.description || ""
+  );
+  const [draftStatus, setDraftStatus] = useState(
+    task.status || columnStatus || "todo"
+  );
+
+  const taskTags = resolveTaskTags(task);
+  const dueLabel = formatDueDate(task.due_date);
+
+  // Color logic: prefer first tag color, fallback to status theme
+  const statusKey = task.status || columnStatus || "todo";
+  const statusTheme = STATUS_COLORS[statusKey] || STATUS_COLORS.todo;
+
+  const primaryTagColor =
+    taskTags.length && taskTags[0].color ? taskTags[0].color : null;
+
+  const accentBorderColor = primaryTagColor || statusTheme.border;
+  const accentBgSoft = primaryTagColor
+    ? hexToSoftBackground(primaryTagColor)
+    : statusTheme.bg;
+
+  const handleSave = () => {
+    onUpdateTask(task.id, {
+      title: draftTitle,
+      description: draftDescription,
+      status: draftStatus,
+    });
+    setIsEditing(false);
+  };
+
+  const handleCancel = () => {
+    setDraftTitle(task.title || "");
+    setDraftDescription(task.description || "");
+    setDraftStatus(task.status || columnStatus || "todo");
+    setIsEditing(false);
+  };
+
+  const handleDelete = (e) => {
+    e.stopPropagation();
+    onDeleteTask(task.id);
+  };
+
+  const handleDragStart = (e) => {
+    onCardDragStart(task.id);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragEnd = () => {
+    onCardDragEnd();
+  };
+
+  if (isEditing) {
+    return (
+      <div
+        className="kanban-card kanban-card--editing"
+        style={{
+          borderColor: accentBorderColor,
+          backgroundColor: accentBgSoft,
+        }}
+      >
+        <div
+          style={{
+            height: 3,
+            borderRadius: "999px",
+            backgroundColor: accentBorderColor,
+            marginBottom: 6,
+          }}
+        />
+
+        <input
+          className="kanban-card__title-input"
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          placeholder="Task title"
+        />
+        <textarea
+          className="kanban-card__description-input"
+          value={draftDescription}
+          onChange={(e) => setDraftDescription(e.target.value)}
+          placeholder="Description"
+          rows={3}
+        />
+        <div className="kanban-card__meta">
+          <div className="kanban-card__field">
+            <label>Status</label>
+            <select
+              value={draftStatus}
+              onChange={(e) => setDraftStatus(e.target.value)}
+            >
+              <option value="todo">To Do</option>
+              <option value="in_progress">In Progress</option>
+              <option value="done">Done</option>
+            </select>
+          </div>
+        </div>
+        <div className="kanban-card__actions">
+          <button type="button" onClick={handleCancel}>
+            Cancel
+          </button>
+          <button type="button" onClick={handleSave}>
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="kanban-card"
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onClick={() => setIsEditing(true)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          setIsEditing(true);
+        }
+      }}
+      style={{
+        borderColor: accentBorderColor,
+        backgroundColor: accentBgSoft,
+        boxShadow: "0 1px 3px rgba(15,23,42,0.12)",
+      }}
+    >
+      {/* Accent bar */}
+      <div
+        style={{
+          height: 3,
+          borderRadius: "999px",
+          backgroundColor: accentBorderColor,
+          marginBottom: 6,
+        }}
+      />
+
+      <div className="kanban-card__title">{task.title}</div>
+
+      {task.description && (
+        <div className="kanban-card__description">
+          {task.description.length > 120
+            ? task.description.slice(0, 120) + "…"
+            : task.description}
+        </div>
+      )}
+
+      <div className="kanban-card__tags">
+        {taskTags.map((tag) => (
+          <span
+            key={tag.id}
+            className="badge"
+            style={{
+              borderRadius: 999,
+              padding: "1px 8px",
+              fontSize: "0.7rem",
+              backgroundColor: tag.color || "#f3f4f6",
+              border: "1px solid rgba(15,23,42,0.08)",
+            }}
+          >
+            {tag.name}
+          </span>
+        ))}
+      </div>
+
+      <div className="kanban-card__footer">
+        <span className="kanban-card__badge">{dueLabel}</span>
+        <span
+          className={`kanban-card__status kanban-card__status--${task.status}`}
+          style={{
+            backgroundColor: accentBorderColor,
+            color: "#0f172a",
+          }}
+        >
+          {task.status === "todo"
+            ? "To Do"
+            : task.status === "in_progress"
+            ? "In Progress"
+            : "Done"}
+        </span>
+        <button
+          type="button"
+          className="kanban-card__delete"
+          onClick={handleDelete}
+          style={{ color: "#b91c1c" }}
+        >
+          ✕
+        </button>
       </div>
     </div>
   );

@@ -1579,3 +1579,161 @@ html,
   background: #f8fafc !important;
   color: #0f172a !important;
 }
+
+.kanban-board {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.kanban-column {
+  flex: 0 0 320px;
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.kanban-column__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 4px 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.kanban-column__count {
+  font-size: 0.85rem;
+  background: #e5e7eb;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.kanban-column__body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.kanban-card {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.kanban-card:focus,
+.kanban-card:hover {
+  border-color: #3b82f6;
+  outline: none;
+}
+
+.kanban-card--editing {
+  cursor: default;
+}
+
+.kanban-card__title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.kanban-card__description {
+  font-size: 0.9rem;
+  color: #4b5563;
+  margin-bottom: 6px;
+}
+
+.kanban-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+.kanban-card__badge {
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.kanban-card__status {
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.kanban-card__status--todo {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.kanban-card__status--in_progress {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.kanban-card__status--done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.kanban-card__title-input,
+.kanban-card__description-input,
+.kanban-card__field select,
+.kanban-card__field input[type="date"] {
+  width: 100%;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  padding: 4px 6px;
+  margin-bottom: 6px;
+}
+
+.kanban-card__meta {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.kanban-card__field {
+  flex: 1;
+  font-size: 0.8rem;
+}
+
+.kanban-card__field label {
+  display: block;
+  margin-bottom: 2px;
+  color: #4b5563;
+}
+
+.kanban-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.kanban-card__actions button {
+  font-size: 0.8rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+}
+
+.kanban-card__actions button:last-child {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #2563eb;
+}
