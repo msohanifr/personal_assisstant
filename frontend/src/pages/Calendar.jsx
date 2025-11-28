@@ -1,9 +1,20 @@
 // frontend/src/pages/Calendar.jsx
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  FaCalendarAlt,
+  FaChevronLeft,
+  FaChevronRight,
+  FaListUl,
+  FaPlay,
+  FaPause,
+  FaRegClock,
+  FaTag,
+  FaTrash,
+  FaUndo,
+} from "react-icons/fa";
 import client from "../api/client";
-import { FaChevronLeft, FaChevronRight, FaCalendarAlt } from "react-icons/fa";
 
-const emptyEvent = {
+const EMPTY_EVENT = {
   title: "",
   description: "",
   start: "",
@@ -11,7 +22,13 @@ const emptyEvent = {
   location: "",
 };
 
-const views = ["month", "week", "day"];
+const VIEWS = ["month", "week", "day", "agenda", "marketing"];
+
+const HOURS_START = 6;
+const HOURS_END = 22;
+const PIXELS_PER_MINUTE = 0.8;
+
+/* ---------- Date helpers ---------- */
 
 function sameDay(a, b) {
   return (
@@ -21,101 +38,347 @@ function sameDay(a, b) {
   );
 }
 
-function startOfWeek(date) {
+function startOfDay(date) {
   const d = new Date(date);
-  const day = d.getDay(); // 0 = Sun
-  d.setDate(d.getDate() - day);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-function addDays(date, days) {
+function endOfDay(date) {
   const d = new Date(date);
-  d.setDate(d.getDate() + days);
+  d.setHours(23, 59, 59, 999);
   return d;
 }
 
+function startOfWeek(date) {
+  const d = startOfDay(date);
+  const day = d.getDay(); // 0 = Sun
+  d.setDate(d.getDate() - day);
+  return d;
+}
+
+function addDays(date, amount) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + amount);
+  return d;
+}
+
+function getWeekDays(anchorDate) {
+  const start = startOfWeek(anchorDate);
+  return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+}
+
+function getMonthMatrix(currentDate) {
+  const firstOfMonth = new Date(
+    currentDate.getFullYear(),
+    currentDate.getMonth(),
+    1
+  );
+  const start = startOfWeek(firstOfMonth);
+  const matrix = [];
+  let cursor = start;
+
+  for (let week = 0; week < 6; week++) {
+    const row = [];
+    for (let day = 0; day < 7; day++) {
+      row.push(new Date(cursor));
+      cursor = addDays(cursor, 1);
+    }
+    matrix.push(row);
+  }
+  return matrix;
+}
+
+function groupEventsByDay(events) {
+  const map = new Map();
+  events.forEach((ev) => {
+    const key = startOfDay(ev._startDate).toISOString();
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(ev);
+  });
+  map.forEach((list) =>
+    list.sort((a, b) => a._startDate.getTime() - b._startDate.getTime())
+  );
+  return map;
+}
+
+// format Date → value for <input type="datetime-local">
+function toLocalInputValue(date) {
+  if (!date) return "";
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hour = pad(d.getHours());
+  const minute = pad(d.getMinutes());
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+/* ---------- Lightweight channel classification + color ---------- */
+
+// Rough marketing channel classification based on title/description
+function classifyChannel(event) {
+  const text = `${event.title} ${event.description} ${event.location}`.toLowerCase();
+  if (
+    text.includes("instagram") ||
+    text.includes("ig") ||
+    text.includes("tiktok") ||
+    text.includes("reel") ||
+    text.includes("social")
+  ) {
+    return "Social";
+  }
+  if (text.includes("newsletter") || text.includes("email")) {
+    return "Email";
+  }
+  if (text.includes("blog") || text.includes("landing") || text.includes("page")) {
+    return "Website";
+  }
+  return "Other";
+}
+
+function getEventColorClass(event) {
+  const ch = classifyChannel(event);
+  if (ch === "Social") return "calendar-event-color-social";
+  if (ch === "Email") return "calendar-event-color-email";
+  if (ch === "Website") return "calendar-event-color-website";
+  return "calendar-event-color-other";
+}
+
+/* ---------- Pomodoro hook ---------- */
+
+function usePomodoro(initialMinutes = 25) {
+  const [minutes, setMinutes] = useState(initialMinutes);
+  const [seconds, setSeconds] = useState(0);
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    if (!running) return;
+
+    const id = setInterval(() => {
+      setSeconds((prev) => {
+        if (prev === 0) {
+          if (minutes === 0) {
+            setRunning(false);
+            return 0;
+          }
+          setMinutes((m) => m - 1);
+          return 59;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(id);
+  }, [running, minutes]);
+
+  const reset = () => {
+    setRunning(false);
+    setMinutes(initialMinutes);
+    setSeconds(0);
+  };
+
+  const toggle = () => setRunning((r) => !r);
+
+  const label = `${String(minutes).padStart(2, "0")}:${String(
+    seconds
+  ).padStart(2, "0")}`;
+
+  return { label, running, reset, toggle };
+}
+
+/* ---------- Calendar page ---------- */
+
 const Calendar = () => {
   const [events, setEvents] = useState([]);
-  const [form, setForm] = useState(emptyEvent);
-  const [view, setView] = useState("month");
-  const [currentDate, setCurrentDate] = useState(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  });
-  const [selectedDate, setSelectedDate] = useState(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  });
+  const [form, setForm] = useState(EMPTY_EVENT);
+  const [editingEventId, setEditingEventId] = useState(null);
 
-  const load = async () => {
-    const res = await client.get("/events/");
-    const mapped = res.data.map((e) => ({
-      ...e,
-      _startDate: new Date(e.start),
-      _endDate: new Date(e.end),
-    }));
-    setEvents(mapped);
+  const [view, setView] = useState("week"); // Fantastical-like default
+  const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
+  const [selectedDate, setSelectedDate] = useState(() =>
+    startOfDay(new Date())
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const pomodoro = usePomodoro(25);
+
+  const loadEvents = async () => {
+    try {
+      setLoading(true);
+      setError("");
+      const res = await client.get("/events/");
+      const mapped = res.data.map((e) => ({
+        ...e,
+        _startDate: new Date(e.start),
+        _endDate: new Date(e.end),
+      }));
+      setEvents(mapped);
+    } catch (err) {
+      console.error("[Calendar] Failed to load events:", err);
+      setError("Could not load events. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    load();
+    loadEvents();
   }, []);
 
-  const handleChange = (e) => {
+  const resetForm = () => {
+    setForm(EMPTY_EVENT);
+    setEditingEventId(null);
+  };
+
+  const handleFieldChange = (e) => {
     const { name, value } = e.target;
-    setForm((f) => ({ ...f, [name]: value }));
+    setForm((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmitEvent = async (e) => {
     e.preventDefault();
-    await client.post("/events/", form);
-    setForm(emptyEvent);
-    load();
+    setError("");
+
+    if (!form.title || !form.start || !form.end) {
+      setError("Please provide at least title, start and end time.");
+      return;
+    }
+
+    const payload = { ...form };
+
+    try {
+      if (editingEventId) {
+        await client.put(`/events/${editingEventId}/`, payload);
+      } else {
+        await client.post("/events/", payload);
+      }
+      resetForm();
+      await loadEvents();
+    } catch (err) {
+      console.error("[Calendar] Failed to save event:", err);
+      setError("Could not save event. Please try again.");
+    }
   };
 
-  const handleViewChange = (nextView) => {
-    setView(nextView);
-    // keep selectedDate anchored
-    setSelectedDate((prev) => {
-      const d = new Date(prev);
-      d.setHours(0, 0, 0, 0);
-      return d;
-    });
+  const handleDeleteEvent = async () => {
+    if (!editingEventId) return;
+    const ok = window.confirm("Delete this event?");
+    if (!ok) return;
+
+    try {
+      await client.delete(`/events/${editingEventId}/`);
+      resetForm();
+      await loadEvents();
+    } catch (err) {
+      console.error("[Calendar] Failed to delete event:", err);
+      setError("Could not delete event. Please try again.");
+    }
   };
 
   const handlePrev = () => {
-    const d = new Date(currentDate);
     if (view === "month") {
+      const d = new Date(currentDate);
       d.setMonth(d.getMonth() - 1);
-    } else if (view === "week") {
-      d.setDate(d.getDate() - 7);
-    } else {
-      d.setDate(d.getDate() - 1);
+      setCurrentDate(d);
+    } else if (view === "week" || view === "agenda" || view === "marketing") {
+      setCurrentDate((d) => addDays(d, -7));
+    } else if (view === "day") {
+      setCurrentDate((d) => addDays(d, -1));
     }
-    setCurrentDate(d);
   };
 
   const handleNext = () => {
-    const d = new Date(currentDate);
     if (view === "month") {
+      const d = new Date(currentDate);
       d.setMonth(d.getMonth() + 1);
-    } else if (view === "week") {
-      d.setDate(d.getDate() + 7);
-    } else {
-      d.setDate(d.getDate() + 1);
+      setCurrentDate(d);
+    } else if (view === "week" || view === "agenda" || view === "marketing") {
+      setCurrentDate((d) => addDays(d, 7));
+    } else if (view === "day") {
+      setCurrentDate((d) => addDays(d, 1));
     }
-    setCurrentDate(d);
+  };
+
+  const beginQuickSlot = (start, end) => {
+    setSelectedDate(startOfDay(start));
+    setCurrentDate(startOfDay(start));
+    setEditingEventId(null);
+    setForm((prev) => ({
+      ...EMPTY_EVENT,
+      ...prev, // keep description/location if user already typed
+      start: toLocalInputValue(start),
+      end: toLocalInputValue(end),
+    }));
   };
 
   const handleToday = () => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    setCurrentDate(d);
-    setSelectedDate(d);
+    const today = startOfDay(new Date());
+    setCurrentDate(today);
+    setSelectedDate(today);
+
+    const start = new Date(today);
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(today);
+    end.setHours(10, 0, 0, 0);
+    beginQuickSlot(start, end);
+  };
+
+  const handleViewChange = (nextView) => setView(nextView);
+
+  // Click on a date in grid → go to that day + prefill
+  const handleDayClick = (date) => {
+    const day = startOfDay(date);
+    setSelectedDate(day);
+    setCurrentDate(day);
     setView("day");
+
+    const start = new Date(day);
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(day);
+    end.setHours(10, 0, 0, 0);
+    beginQuickSlot(start, end);
+  };
+
+  // Double-click in month → quick new event
+  const handleQuickNewForDate = (date) => {
+    const day = startOfDay(date);
+    const start = new Date(day);
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(day);
+    end.setHours(10, 0, 0, 0);
+    setView("day");
+    beginQuickSlot(start, end);
+  };
+
+  // Click on specific hour slot in week view → quick new event
+  const handleTimeSlotClick = (date, hour) => {
+    const day = startOfDay(date);
+    const start = new Date(day);
+    start.setHours(hour, 0, 0, 0);
+    const end = new Date(start);
+    end.setHours(hour + 1);
+    beginQuickSlot(start, end);
+  };
+
+  const handleEditEvent = (ev) => {
+    setEditingEventId(ev.id);
+    const day = startOfDay(ev._startDate);
+    setSelectedDate(day);
+    setCurrentDate(day);
+
+    setForm({
+      title: ev.title || "",
+      description: ev.description || "",
+      location: ev.location || "",
+      start: toLocalInputValue(ev._startDate),
+      end: toLocalInputValue(ev._endDate),
+    });
   };
 
   const monthLabel = useMemo(() => {
@@ -135,325 +398,677 @@ const Calendar = () => {
     return formatter.format(selectedDate);
   }, [selectedDate]);
 
-  const eventsForDate = (date) =>
-    events.filter((ev) => sameDay(ev._startDate, date));
+  const weekDays = useMemo(() => getWeekDays(currentDate), [currentDate]);
 
-  // Month view grid
-  const monthGridDays = useMemo(() => {
-    if (view !== "month") return [];
-    const firstOfMonth = new Date(
-      currentDate.getFullYear(),
-      currentDate.getMonth(),
-      1
-    );
-    const gridStart = startOfWeek(firstOfMonth);
-    return Array.from({ length: 42 }).map((_, idx) =>
-      addDays(gridStart, idx)
-    );
-  }, [currentDate, view]);
+  // multi-day event overlap
+  const eventsForDate = (date) => {
+    const dayStart = startOfDay(date);
+    const dayEnd = endOfDay(date);
 
-  // Week view days
-  const weekDays = useMemo(() => {
-    if (view !== "week") return [];
-    const start = startOfWeek(currentDate);
-    return Array.from({ length: 7 }).map((_, idx) => addDays(start, idx));
-  }, [currentDate, view]);
-
-  // Day view events
-  const dayEvents = useMemo(
-    () => (view === "day" ? eventsForDate(selectedDate) : eventsForDate(selectedDate)),
-    // we keep eventsForDate(selectedDate) so even in other views you "know" what's on the selected day
-    [events, selectedDate, view]
-  );
-
-  const weekDayHeader = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-  const focusSelectedDay = () => {
-    // This is the "show all events for one day" action
-    setView("day");
+    return events.filter((ev) => {
+      const evStart = ev._startDate;
+      const evEnd = ev._endDate;
+      if (!evStart || !evEnd) return false;
+      return evStart <= dayEnd && evEnd >= dayStart;
+    });
   };
 
-  return (
-    <div className="page">
-      <h2 className="page-title flex items-center gap-4">
-        <FaCalendarAlt /> <span>Calendar</span>
-      </h2>
+  const agendaEvents = useMemo(() => {
+    const weekSet = new Set(
+      getWeekDays(currentDate).map((d) => startOfDay(d).toISOString())
+    );
+    const weekEvents = events.filter((ev) =>
+      weekSet.has(startOfDay(ev._startDate).toISOString())
+    );
+    const grouped = groupEventsByDay(weekEvents);
+    return Array.from(grouped.entries())
+      .map(([iso, list]) => ({
+        date: new Date(iso),
+        events: list,
+      }))
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+  }, [events, currentDate]);
 
-      {/* Toolbar */}
+  const marketingGrid = useMemo(() => {
+    const channels = ["Social", "Email", "Website", "Other"];
+    const days = getWeekDays(currentDate);
+    const grid = {};
+
+    channels.forEach((channel) => {
+      grid[channel] = {};
+      days.forEach((day) => {
+        grid[channel][startOfDay(day).toISOString()] = [];
+      });
+    });
+
+    events.forEach((event) => {
+      const dayKey = startOfDay(event._startDate).toISOString();
+      const channel = classifyChannel(event);
+      if (!grid[channel] || !grid[channel][dayKey]) return;
+      grid[channel][dayKey].push(event);
+    });
+
+    return { channels, days, grid };
+  }, [events, currentDate]);
+
+  /* ---------- Views ---------- */
+
+  const renderMonthView = () => {
+    const matrix = getMonthMatrix(currentDate);
+    const weekDayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const currentMonth = currentDate.getMonth();
+
+    return (
+      <div className="calendar-month-view">
+        <div className="calendar-weekdays-row">
+          {weekDayLabels.map((label) => (
+            <div key={label} className="calendar-weekday-label">
+              {label}
+            </div>
+          ))}
+        </div>
+        <div className="calendar-month-grid">
+          {matrix.map((week, wi) =>
+            week.map((date, di) => {
+              const isToday = sameDay(date, new Date());
+              const isCurrentMonth = date.getMonth() === currentMonth;
+              const dayEvents = eventsForDate(date);
+              return (
+                <button
+                  key={`${wi}-${di}`}
+                  type="button"
+                  className={[
+                    "calendar-day-cell",
+                    !isCurrentMonth && "calendar-day-outside",
+                    isToday && "calendar-day-today",
+                    sameDay(date, selectedDate) && "calendar-day-selected",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => handleDayClick(date)}
+                  onDoubleClick={() => handleQuickNewForDate(date)}
+                >
+                  <div className="calendar-day-number">{date.getDate()}</div>
+                  <div className="calendar-day-events">
+                    {dayEvents.slice(0, 3).map((ev) => (
+                      <div
+                        key={ev.id}
+                        className={
+                          "calendar-event-chip " + getEventColorClass(ev)
+                        }
+                        title={ev.title}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditEvent(ev);
+                        }}
+                      >
+                        <span className="calendar-event-dot" />
+                        <span className="calendar-event-title">
+                          {ev.title}
+                        </span>
+                      </div>
+                    ))}
+                    {dayEvents.length > 3 && (
+                      <div className="calendar-more-events">
+                        +{dayEvents.length - 3} more
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderWeekView = () => {
+    const days = weekDays;
+    const hours = Array.from(
+      { length: HOURS_END - HOURS_START + 1 },
+      (_, i) => HOURS_START + i
+    );
+
+    return (
+      <div className="calendar-week-view">
+        <div className="calendar-week-grid">
+          <div className="calendar-week-hours-column">
+            <div className="calendar-week-header-spacer" />
+            <div className="calendar-week-hours">
+              {hours.map((hour) => (
+                <div key={hour} className="calendar-hour-cell">
+                  {hour.toString().padStart(2, "0")}:00
+                </div>
+              ))}
+            </div>
+          </div>
+          {days.map((date) => {
+            const isToday = sameDay(date, new Date());
+            const isSelected = sameDay(date, selectedDate);
+            const dayEvents = eventsForDate(date);
+
+            return (
+              <div
+                key={date.toISOString()}
+                className="calendar-week-day-column"
+              >
+                <button
+                  type="button"
+                  className={[
+                    "calendar-week-day-header",
+                    isToday && "calendar-week-day-header-today",
+                    isSelected && "calendar-week-day-header-selected",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => handleDayClick(date)}
+                >
+                  <div className="calendar-week-day-name">
+                    {date.toLocaleDateString("en-US", { weekday: "short" })}
+                  </div>
+                  <div className="calendar-week-day-number">
+                    {date.getDate()}
+                  </div>
+                </button>
+                <div className="calendar-week-day-body">
+                  {hours.map((hour) => (
+                    <div
+                      key={`${date.toISOString()}-${hour}`}
+                      className="calendar-hour-slot"
+                      onClick={() => handleTimeSlotClick(date, hour)}
+                    />
+                  ))}
+                  {dayEvents.map((ev) => {
+                    // clip multi-day events to this day
+                    const dayStart = startOfDay(date);
+                    const dayEnd = endOfDay(date);
+                    const segmentStart =
+                      ev._startDate < dayStart ? dayStart : ev._startDate;
+                    const segmentEnd =
+                      ev._endDate > dayEnd ? dayEnd : ev._endDate;
+
+                    const startMinutes =
+                      (segmentStart.getHours() - HOURS_START) * 60 +
+                      segmentStart.getMinutes();
+                    const endMinutes =
+                      (segmentEnd.getHours() - HOURS_START) * 60 +
+                      segmentEnd.getMinutes();
+
+                    const top = Math.max(startMinutes * PIXELS_PER_MINUTE, 0);
+                    const height = Math.max(
+                      (endMinutes - startMinutes) * PIXELS_PER_MINUTE,
+                      32
+                    );
+
+                    return (
+                      <div
+                        key={ev.id + date.toISOString()}
+                        className={
+                          "calendar-event-block " + getEventColorClass(ev)
+                        }
+                        style={{ top, height }}
+                        title={ev.title}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditEvent(ev);
+                        }}
+                      >
+                        <div className="calendar-event-block-title">
+                          {ev.title}
+                        </div>
+                        <div className="calendar-event-block-time">
+                          {segmentStart.toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}{" "}
+                          -{" "}
+                          {segmentEnd.toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderDayView = () => {
+    const dayEvents = eventsForDate(selectedDate).sort(
+      (a, b) => a._startDate - b._startDate
+    );
+
+    return (
+      <div className="calendar-day-view">
+        <div className="calendar-day-header-row">
+          <div className="calendar-day-header-title">{dayLabel}</div>
+          <div className="calendar-day-header-sub">
+            {dayEvents.length} event{dayEvents.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        {dayEvents.length === 0 ? (
+          <div className="calendar-empty-state">
+            <FaCalendarAlt />
+            <p>
+              No events for this day. Click on a time slot or use the form on
+              the right to add one.
+            </p>
+          </div>
+        ) : (
+          <div className="calendar-day-events-list">
+            {dayEvents.map((ev) => (
+              <div
+                key={ev.id}
+                className={
+                  "calendar-day-card " + getEventColorClass(ev)
+                }
+                onClick={() => handleEditEvent(ev)}
+              >
+                <div className="calendar-day-card-time">
+                  {ev._startDate.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}{" "}
+                  –{" "}
+                  {ev._endDate.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </div>
+                <div className="calendar-day-card-title">{ev.title}</div>
+                {ev.location && (
+                  <div className="calendar-day-card-location">
+                    <FaTag /> {ev.location}
+                  </div>
+                )}
+                {ev.description && (
+                  <div className="calendar-day-card-description">
+                    {ev.description}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderAgendaView = () => {
+    return (
+      <div className="calendar-agenda-view">
+        {agendaEvents.length === 0 ? (
+          <div className="calendar-empty-state">
+            <FaListUl />
+            <p>No events scheduled for this week.</p>
+          </div>
+        ) : (
+          agendaEvents.map(({ date, events: dayEvents }) => (
+            <div key={date.toISOString()} className="calendar-agenda-day">
+              <div className="calendar-agenda-day-header">
+                {date.toLocaleDateString("en-US", {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                })}
+              </div>
+              <div className="calendar-agenda-events">
+                {dayEvents.map((ev) => (
+                  <div
+                    key={ev.id}
+                    className={
+                      "calendar-agenda-card " + getEventColorClass(ev)
+                    }
+                    onClick={() => handleEditEvent(ev)}
+                  >
+                    <div className="calendar-agenda-time">
+                      {ev._startDate.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}{" "}
+                      –{" "}
+                      {ev._endDate.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                    <div className="calendar-agenda-title">{ev.title}</div>
+                    {ev.location && (
+                      <div className="calendar-agenda-location">
+                        <FaTag /> {ev.location}
+                      </div>
+                    )}
+                    {ev.description && (
+                      <div className="calendar-agenda-description">
+                        {ev.description}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    );
+  };
+
+  const renderMarketingView = () => {
+    const { channels, days, grid } = marketingGrid;
+
+    return (
+      <div className="calendar-marketing-view">
+        <div className="calendar-marketing-header">
+          <h3>Marketing schedule</h3>
+          <p className="calendar-marketing-sub">
+            Lightweight board inspired by marketing calendars. Events are
+            grouped by channel based on their title, description &amp; location.
+          </p>
+        </div>
+        <div className="calendar-marketing-grid">
+          <div className="calendar-marketing-grid-header">
+            <div className="calendar-marketing-channel-cell" />
+            {days.map((date) => (
+              <div
+                key={date.toISOString()}
+                className="calendar-marketing-day-header"
+              >
+                <div className="calendar-marketing-day-name">
+                  {date.toLocaleDateString("en-US", { weekday: "short" })}
+                </div>
+                <div className="calendar-marketing-day-number">
+                  {date.getDate()}
+                </div>
+              </div>
+            ))}
+          </div>
+          {channels.map((channel) => (
+            <div key={channel} className="calendar-marketing-row">
+              <div className="calendar-marketing-channel-cell">{channel}</div>
+              {days.map((date) => {
+                const key = startOfDay(date).toISOString();
+                const cellEvents = grid[channel][key] || [];
+                return (
+                  <div
+                    key={`${channel}-${key}`}
+                    className="calendar-marketing-cell"
+                  >
+                    {cellEvents.length === 0
+                      ? null
+                      : cellEvents.map((ev) => (
+                          <div
+                            key={ev.id}
+                            className={
+                              "calendar-marketing-chip " +
+                              getEventColorClass(ev)
+                            }
+                            title={ev.title}
+                            onClick={() => handleEditEvent(ev)}
+                          >
+                            <span className="calendar-event-dot" />
+                            <span className="calendar-event-title">
+                              {ev.title}
+                            </span>
+                          </div>
+                        ))}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCurrentView = () => {
+    if (view === "month") return renderMonthView();
+    if (view === "week") return renderWeekView();
+    if (view === "day") return renderDayView();
+    if (view === "agenda") return renderAgendaView();
+    if (view === "marketing") return renderMarketingView();
+    return null;
+  };
+
+  const todayEventsCount = eventsForDate(startOfDay(new Date())).length;
+
+  const isEditing = !!editingEventId;
+
+  return (
+    <div className="page page-calendar">
+      {/* Top toolbar */}
       <div className="calendar-toolbar">
         <div className="calendar-nav">
-          <button className="secondary-btn" onClick={handleToday}>
-            Today
-          </button>
-          <button className="icon-btn" onClick={handlePrev}>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={handlePrev}
+            aria-label="Previous period"
+          >
             <FaChevronLeft />
           </button>
-          <button className="icon-btn" onClick={handleNext}>
+          <button type="button" className="icon-btn" onClick={handleToday}>
+            Today
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={handleNext}
+            aria-label="Next period"
+          >
             <FaChevronRight />
           </button>
-          <span className="calendar-title">
-            {view === "day" ? dayLabel : monthLabel}
-          </span>
+          <div className="calendar-title">
+            <FaCalendarAlt style={{ marginRight: 4 }} />
+            <span>{monthLabel}</span>
+          </div>
         </div>
 
         <div className="calendar-toolbar-right">
-          {/* NEW: explicit "only this day" button */}
-          <button
-            type="button"
-            className="secondary-btn calendar-focus-day-btn"
-            onClick={focusSelectedDay}
-          >
-            Only this day: {dayLabel}
-          </button>
-
           <div className="calendar-view-toggle">
-            {views.map((v) => (
+            {VIEWS.map((v) => (
               <button
                 key={v}
+                type="button"
                 className={
                   "toggle-btn" + (view === v ? " toggle-btn-active" : "")
                 }
                 onClick={() => handleViewChange(v)}
               >
-                {v === "month"
-                  ? "Month"
-                  : v === "week"
-                  ? "Week"
-                  : "Day"}
+                {v.charAt(0).toUpperCase() + v.slice(1)}
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      <div className="grid-2 calendar-layout">
-        {/* Left: calendar */}
-        <div className="card calendar-card">
-          {/* Headers for week days */}
-          {view !== "day" && (
-            <div className="calendar-week-header">
-              {weekDayHeader.map((wd) => (
-                <div key={wd} className="calendar-week-day">
-                  {wd}
-                </div>
-              ))}
+      {/* Main layout: big calendar + right sidebar */}
+      <div className="calendar-layout grid-2">
+        <div className="card calendar-main">
+          {loading && (
+            <div className="calendar-loading-bar">
+              <span className="calendar-loading-pulse" />
+              Syncing your schedule…
             </div>
           )}
-
-          {/* Month view */}
-          {view === "month" && (
-            <div className="calendar-grid">
-              {monthGridDays.map((date, idx) => {
-                const isCurrentMonth =
-                  date.getMonth() === currentDate.getMonth();
-                const isToday = sameDay(date, new Date());
-                const isSelected = sameDay(date, selectedDate);
-                const evs = eventsForDate(date);
-
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    className={
-                      "calendar-cell " +
-                      (!isCurrentMonth ? "calendar-cell-muted " : "") +
-                      (isSelected ? "calendar-cell-selected " : "") +
-                      (isToday ? "calendar-cell-today " : "")
-                    }
-                    onClick={() => setSelectedDate(date)}
-                  >
-                    <div className="calendar-cell-date">
-                      {date.getDate()}
-                    </div>
-                    <div className="calendar-cell-events">
-                      {evs.slice(0, 3).map((ev) => (
-                        <div
-                          key={ev.id}
-                          className="calendar-event-pill"
-                          title={ev.title}
-                        >
-                          {ev.title}
-                        </div>
-                      ))}
-                      {evs.length > 3 && (
-                        <div className="calendar-more">
-                          +{evs.length - 3} more
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Week view */}
-          {view === "week" && (
-            <div className="calendar-week-grid">
-              {weekDays.map((date) => {
-                const isToday = sameDay(date, new Date());
-                const isSelected = sameDay(date, selectedDate);
-                const evs = eventsForDate(date);
-                const label = `${date.getDate()}`;
-                return (
-                  <div
-                    key={date.toISOString()}
-                    className={
-                      "calendar-week-column " +
-                      (isSelected ? "calendar-week-selected " : "") +
-                      (isToday ? "calendar-week-today " : "")
-                    }
-                    onClick={() => setSelectedDate(date)}
-                  >
-                    <div className="calendar-week-column-header">
-                      <div className="muted text-xs">
-                        {weekDayHeader[date.getDay()]}
-                      </div>
-                      <div className="font-medium">{label}</div>
-                    </div>
-                    <div className="calendar-week-column-body">
-                      {evs.length === 0 && (
-                        <div className="calendar-empty">No events</div>
-                      )}
-                      {evs.map((ev) => (
-                        <div
-                          key={ev.id}
-                          className="calendar-event-card"
-                        >
-                          <div className="calendar-event-title">
-                            {ev.title}
-                          </div>
-                          <div className="calendar-event-time muted text-xs">
-                            {new Date(ev.start).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                            {" – "}
-                            {new Date(ev.end).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </div>
-                          {ev.location && (
-                            <div className="calendar-event-location muted text-xs">
-                              {ev.location}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Day view – shows ALL events for selectedDate */}
-          {view === "day" && (
-            <div className="calendar-day-view">
-              <div className="calendar-day-header">
-                <div className="day-label-main">{dayLabel}</div>
-                <div className="muted text-xs">
-                  {dayEvents.length}{" "}
-                  {dayEvents.length === 1 ? "event" : "events"}
-                </div>
-              </div>
-              <div className="calendar-day-list">
-                {dayEvents.length === 0 && (
-                  <div className="calendar-empty">
-                    No events scheduled for this day.
-                  </div>
-                )}
-                {dayEvents.map((ev) => (
-                  <div
-                    key={ev.id}
-                    className="calendar-event-card calendar-event-card-full"
-                  >
-                    <div className="calendar-event-title">{ev.title}</div>
-                    <div className="calendar-event-time muted text-xs">
-                      {new Date(ev.start).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                      {" – "}
-                      {new Date(ev.end).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                    {ev.location && (
-                      <div className="calendar-event-location muted text-xs">
-                        {ev.location}
-                      </div>
-                    )}
-                    {ev.description && (
-                      <p className="mt-1 text-sm">{ev.description}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {error && <div className="error-banner">{error}</div>}
+          {renderCurrentView()}
         </div>
 
-        {/* Right: quick add form */}
-        <form onSubmit={handleSubmit} className="card form-card">
-          <h3 className="card-title">Add event</h3>
-          <label className="field-label">
-            Title
-            <input
-              className="field-input"
-              name="title"
-              value={form.title}
-              onChange={handleChange}
-              required
-            />
-          </label>
-          <label className="field-label">
-            Start
-            <input
-              type="datetime-local"
-              className="field-input"
-              name="start"
-              value={form.start}
-              onChange={handleChange}
-              required
-            />
-          </label>
-          <label className="field-label">
-            End
-            <input
-              type="datetime-local"
-              className="field-input"
-              name="end"
-              value={form.end}
-              onChange={handleChange}
-              required
-            />
-          </label>
-          <label className="field-label">
-            Location
-            <input
-              className="field-input"
-              name="location"
-              value={form.location}
-              onChange={handleChange}
-            />
-          </label>
-          <label className="field-label">
-            Description
-            <textarea
-              className="field-input"
-              name="description"
-              value={form.description}
-              onChange={handleChange}
-              rows={3}
-            />
-          </label>
-          <button className="primary-btn" type="submit">
-            Save event
-          </button>
-        </form>
+        <aside className="calendar-right-pane">
+          <section className="card calendar-card">
+            <div className="calendar-card-header">
+              <FaRegClock />
+              <div>
+                <div className="calendar-card-title">Today</div>
+                <div className="calendar-card-sub">
+                  {todayEventsCount} event
+                  {todayEventsCount === 1 ? "" : "s"} scheduled
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="secondary-btn calendar-focus-day-btn"
+              onClick={() => {
+                const today = startOfDay(new Date());
+                setSelectedDate(today);
+                setCurrentDate(today);
+                setView("day");
+              }}
+            >
+              Focus on today
+            </button>
+          </section>
+
+          <section className="card calendar-card">
+            <div className="calendar-card-header">
+              <FaCalendarAlt />
+              <div>
+                <div className="calendar-card-title">
+                  {isEditing ? "Edit event" : "Quick event"}
+                </div>
+                <div className="calendar-card-sub">
+                  {isEditing
+                    ? "Update or delete the selected event."
+                    : "Minimal friction to add something to your calendar."}
+                </div>
+              </div>
+            </div>
+            <form className="calendar-form" onSubmit={handleSubmitEvent}>
+              <label className="field-label">
+                Title
+                <input
+                  className="field-input"
+                  type="text"
+                  name="title"
+                  value={form.title}
+                  onChange={handleFieldChange}
+                  placeholder="e.g., Deep work, client call…"
+                  required
+                />
+              </label>
+              <div className="calendar-form-row">
+                <label className="field-label">
+                  Start
+                  <input
+                    className="field-input"
+                    type="datetime-local"
+                    name="start"
+                    value={form.start}
+                    onChange={handleFieldChange}
+                    required
+                  />
+                </label>
+                <label className="field-label">
+                  End
+                  <input
+                    className="field-input"
+                    type="datetime-local"
+                    name="end"
+                    value={form.end}
+                    onChange={handleFieldChange}
+                    required
+                  />
+                </label>
+              </div>
+              <label className="field-label">
+                Location / channel
+                <input
+                  className="field-input"
+                  type="text"
+                  name="location"
+                  value={form.location}
+                  onChange={handleFieldChange}
+                  placeholder="Zoom, office, Instagram, newsletter…"
+                />
+              </label>
+              <label className="field-label">
+                Notes
+                <textarea
+                  className="field-input"
+                  name="description"
+                  value={form.description}
+                  onChange={handleFieldChange}
+                  rows={3}
+                  placeholder="Optional details, links, agenda…"
+                />
+              </label>
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  marginTop: 4,
+                }}
+              >
+                <button className="primary-btn" type="submit">
+                  {isEditing ? "Update event" : "Save event"}
+                </button>
+
+                {isEditing && (
+                  <>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={resetForm}
+                    >
+                      <FaUndo style={{ marginRight: 4 }} />
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={handleDeleteEvent}
+                      title="Delete event"
+                    >
+                      <FaTrash />
+                    </button>
+                  </>
+                )}
+              </div>
+            </form>
+          </section>
+
+          <section className="card calendar-card">
+            <div className="calendar-card-header">
+              <FaRegClock />
+              <div>
+                <div className="calendar-card-title">Focus timer</div>
+                <div className="calendar-card-sub">
+                  Simple Pomodoro-style focus block.
+                </div>
+              </div>
+            </div>
+            <div className="pomodoro-timer">
+              <div className="pomodoro-display">{pomodoro.label}</div>
+              <div className="pomodoro-actions">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={pomodoro.toggle}
+                >
+                  {pomodoro.running ? <FaPause /> : <FaPlay />}
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={pomodoro.reset}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          </section>
+        </aside>
       </div>
     </div>
   );

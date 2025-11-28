@@ -12,13 +12,19 @@ import {
   FaTimes,
 } from "react-icons/fa";
 
-const Sidebar = ({ isOpen, onClose }) => {
+const Sidebar = ({ isOpen, onClose, emailUnreadCount = 0 }) => {
   const navLinkClass = ({ isActive }) =>
     "sidebar-link " +
     (isActive ? "sidebar-link-active" : "sidebar-link-idle");
 
+  // cap like iPhone badges
+  const emailBadgeDisplay =
+    emailUnreadCount > 99 ? "99+" : emailUnreadCount.toString();
+
   return (
-    <aside className={isOpen ? "sidebar sidebar-open" : "sidebar sidebar-closed"}>
+    <aside
+      className={isOpen ? "sidebar sidebar-open" : "sidebar sidebar-closed"}
+    >
       <div className="sidebar-header">
         <div className="logo-circle">A</div>
         <div className="sidebar-header-text">
@@ -39,20 +45,34 @@ const Sidebar = ({ isOpen, onClose }) => {
         <NavLink to="/" className={navLinkClass} end>
           <FaHome /> <span>Dashboard</span>
         </NavLink>
+
         <NavLink to="/tasks" className={navLinkClass}>
           <FaTasks /> <span>Tasks</span>
         </NavLink>
+
         <NavLink to="/notes" className={navLinkClass}>
           <FaStickyNote /> <span>Notes</span>
         </NavLink>
+
         <NavLink to="/calendar" className={navLinkClass}>
           <FaCalendarAlt /> <span>Calendar</span>
         </NavLink>
+
         <NavLink to="/contacts" className={navLinkClass}>
           <FaUserFriends /> <span>Contacts</span>
         </NavLink>
+
+        {/* Emails + unread badge */}
         <NavLink to="/emails" className={navLinkClass}>
-          <FaEnvelopeOpenText /> <span>Emails</span>
+          <FaEnvelopeOpenText />
+          <span className="sidebar-link-label-with-badge">
+            <span>Emails</span>
+            {emailUnreadCount > 0 && (
+              <span className="sidebar-badge-email">
+                {emailBadgeDisplay}
+              </span>
+            )}
+          </span>
         </NavLink>
       </nav>
 

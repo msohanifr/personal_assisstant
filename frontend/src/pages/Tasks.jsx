@@ -8,6 +8,7 @@ const emptyTask = {
   description: "",
   status: "todo",
   due_date: "",
+  tag_ids: [],
 };
 
 const Tasks = () => {
@@ -21,7 +22,22 @@ const Tasks = () => {
   const [relatedNotes, setRelatedNotes] = useState([]);
   const [relatedNotesError, setRelatedNotesError] = useState("");
 
-  const load = async () => {
+  // --- Tags state ---
+  const [allTags, setAllTags] = useState([]);
+  const [tagError, setTagError] = useState("");
+  const [tagFormName, setTagFormName] = useState("");
+  const [tagFormColor, setTagFormColor] = useState("#f97316");
+
+  // --- Search state ---
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // --- Delete state ---
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // ----------------------------
+  // Load tasks
+  // ----------------------------
+  const loadTasks = async () => {
     setError("");
     try {
       console.debug("[Tasks] Loading tasks from /tasks/");
@@ -50,10 +66,39 @@ const Tasks = () => {
     }
   };
 
+  // ----------------------------
+  // Load tags
+  // ----------------------------
+  const loadTags = async () => {
+    setTagError("");
+    try {
+      console.debug("[Tasks] Loading tags from /task-tags/");
+      const res = await client.get("/task-tags/");
+      console.debug("[Tasks] Loaded tags:", res.data);
+      setAllTags(res.data || []);
+    } catch (err) {
+      console.error("[Tasks] Error loading tags:", err);
+      if (err.response) {
+        const { status, data } = err.response;
+        setTagError(
+          `Error ${status} while loading tags: ${
+            typeof data === "string" ? data : JSON.stringify(data)
+          }`
+        );
+      } else {
+        setTagError("Network error while loading tags. Check console for details.");
+      }
+    }
+  };
+
   useEffect(() => {
-    load();
+    loadTasks();
+    loadTags();
   }, []);
 
+  // ----------------------------
+  // General helpers
+  // ----------------------------
   const handleChange = (e) => {
     const { name, value } = e.target;
     console.debug("[Tasks] Form change:", name, "->", value);
@@ -91,11 +136,15 @@ const Tasks = () => {
     setRelatedNotesError("");
   };
 
+  // ----------------------------
+  // Create / Update task
+  // ----------------------------
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
 
     const payload = { ...form };
+
     if (!payload.due_date) {
       const now = new Date();
       payload.due_date = now.toISOString();
@@ -105,6 +154,11 @@ const Tasks = () => {
       );
     } else {
       console.debug("[Tasks] Using provided due_date:", payload.due_date);
+    }
+
+    // Ensure tag_ids is always an array
+    if (!Array.isArray(payload.tag_ids)) {
+      payload.tag_ids = [];
     }
 
     try {
@@ -117,7 +171,8 @@ const Tasks = () => {
         setEditingTaskId(null);
         setRelatedNotes([]);
         setRelatedNotesError("");
-        load();
+        // Reload to re-apply global sorting
+        loadTasks();
       } else {
         // UPDATE
         console.debug(
@@ -133,11 +188,13 @@ const Tasks = () => {
           prev.map((t) => (t.id === editingTaskId ? res.data : t))
         );
 
+        const taskTagIds = resolveTaskTagIds(res.data);
         setForm({
           title: res.data.title || "",
           description: res.data.description || "",
           status: res.data.status || "todo",
           due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
+          tag_ids: taskTagIds,
         });
       }
     } catch (err) {
@@ -162,7 +219,53 @@ const Tasks = () => {
     }
   };
 
-  // Load notes attached to a given task
+  // ----------------------------
+  // Delete task
+  // ----------------------------
+  const handleDeleteTask = async (taskIdParam) => {
+    const id = taskIdParam || editingTaskId;
+    if (!id) {
+      console.debug("[Tasks] handleDeleteTask called with no id");
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this task? This cannot be undone.");
+    if (!confirmed) {
+      console.debug("[Tasks] Delete cancelled by user");
+      return;
+    }
+
+    try {
+      setIsDeleting(true);
+      console.debug("[Tasks] Deleting task id=%s via DELETE /tasks/%s/", id, id);
+      await client.delete(`/tasks/${id}/`);
+
+      setTasks((prev) => prev.filter((t) => t.id !== id));
+
+      // If we just deleted the currently edited task, reset the form
+      if (editingTaskId === id) {
+        resetToNewTask();
+      }
+    } catch (err) {
+      console.error("[Tasks] Error deleting task:", err);
+      if (err.response) {
+        const { status, data } = err.response;
+        setError(
+          `Error ${status} while deleting task: ${
+            typeof data === "string" ? data : JSON.stringify(data)
+          }`
+        );
+      } else {
+        setError("Network error while deleting task. Check console for details.");
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // ----------------------------
+  // Related notes
+  // ----------------------------
   const loadRelatedNotes = async (taskId) => {
     setRelatedNotes([]);
     setRelatedNotesError("");
@@ -201,7 +304,9 @@ const Tasks = () => {
     }
   };
 
-  // Toggle task as done/undone via PATCH
+  // ----------------------------
+  // Toggle done
+  // ----------------------------
   const handleToggleDone = async (task, index) => {
     const newStatus = task.status === "done" ? "todo" : "done";
     console.debug(
@@ -246,8 +351,9 @@ const Tasks = () => {
     }
   };
 
-  // --- Drag & drop reordering (front-end only) ---
-
+  // ----------------------------
+  // Drag & drop (front-end only)
+  // ----------------------------
   const handleDragStart = (e, index) => {
     console.debug("[Tasks] Drag start at index:", index);
     setDragIndex(index);
@@ -297,12 +403,14 @@ const Tasks = () => {
     setDragIndex(null);
   };
 
+  // ----------------------------
+  // Grouping & formatting helpers
+  // ----------------------------
   const handleGroupModeChange = (mode) => {
     console.debug("[Tasks] Changing group mode to:", mode);
     setGroupMode(mode);
   };
 
-  // Helper to format due_date nicely in the list
   const formatDueDate = (value) => {
     if (!value) return "No due date";
     try {
@@ -322,8 +430,6 @@ const Tasks = () => {
       return value;
     }
   };
-
-  // --- Grouping helpers ---
 
   const startOfDay = (d) => {
     const date = new Date(d);
@@ -385,12 +491,104 @@ const Tasks = () => {
     });
   };
 
+  // ----------------------------
+  // Tag helpers
+  // ----------------------------
+  const resolveTaskTagIds = (task) => {
+    if (!task) return [];
+    // If backend sends tag_ids directly
+    if (Array.isArray(task.tag_ids)) {
+      return task.tag_ids;
+    }
+    // If backend sends tags as objects
+    if (Array.isArray(task.tags) && task.tags.length > 0) {
+      if (typeof task.tags[0] === "object") {
+        return task.tags.map((t) => t.id);
+      }
+      // If it's an array of IDs
+      return task.tags;
+    }
+    return [];
+  };
+
+  const resolveTaskTags = (task) => {
+    const ids = resolveTaskTagIds(task);
+    if (!ids.length || !allTags.length) return [];
+    return allTags.filter((tag) => ids.includes(tag.id));
+  };
+
+  const toggleTagOnForm = (tagId) => {
+    setForm((prev) => {
+      const current = Array.isArray(prev.tag_ids) ? prev.tag_ids : [];
+      if (current.includes(tagId)) {
+        return { ...prev, tag_ids: current.filter((id) => id !== tagId) };
+      }
+      return { ...prev, tag_ids: [...current, tagId] };
+    });
+  };
+
+  const handleCreateTag = async (e) => {
+    e.preventDefault();
+    setTagError("");
+
+    const name = tagFormName.trim();
+    if (!name) {
+      setTagError("Tag name cannot be empty.");
+      return;
+    }
+
+    try {
+      console.debug("[Tasks] Creating tag:", { name, color: tagFormColor });
+      const res = await client.post("/task-tags/", {
+        name,
+        color: tagFormColor,
+      });
+      console.debug("[Tasks] Tag created:", res.data);
+
+      setAllTags((prev) => [...prev, res.data]);
+      setTagFormName("");
+      setTagFormColor("#f97316");
+    } catch (err) {
+      console.error("[Tasks] Error creating tag:", err);
+      if (err.response) {
+        const { status, data } = err.response;
+        setTagError(
+          `Error ${status} while creating tag: ${
+            typeof data === "string" ? data : JSON.stringify(data)
+          }`
+        );
+      } else {
+        setTagError("Network error while creating tag. Check console for details.");
+      }
+    }
+  };
+
+  // ----------------------------
+  // Grouped & filtered tasks
+  // ----------------------------
   const grouped = useMemo(() => {
     console.debug("[Tasks] Computing grouped tasks for mode:", groupMode);
+
+    const q = searchQuery.trim().toLowerCase();
     const groupsMap = new Map();
     const noDateKey = "no_date";
 
-    tasks.forEach((task, idx) => {
+    const filteredTasks = tasks.filter((task) => {
+      if (!q) return true;
+
+      const title = (task.title || "").toLowerCase();
+      const description = (task.description || "").toLowerCase();
+      const taskTags = resolveTaskTags(task);
+      const tagText = taskTags.map((t) => t.name.toLowerCase()).join(" ");
+
+      return (
+        title.includes(q) ||
+        description.includes(q) ||
+        (tagText && tagText.includes(q))
+      );
+    });
+
+    filteredTasks.forEach((task, idx) => {
       const raw = task.due_date;
       const d = raw ? new Date(raw) : null;
 
@@ -439,7 +637,7 @@ const Tasks = () => {
     });
 
     console.debug(
-      "[Tasks] Grouped tasks:",
+      "[Tasks] Grouped tasks (after search):",
       groupsArr.map((g) => ({
         label: g.label,
         ids: g.items.map((i) => i.task.id),
@@ -447,34 +645,43 @@ const Tasks = () => {
     );
 
     return groupsArr;
-  }, [tasks, groupMode]);
+  }, [tasks, groupMode, searchQuery, allTags]);
 
-  // When clicking on a task row → load into form for editing + load related notes
+  // ----------------------------
+  // Select task for editing
+  // ----------------------------
   const handleSelectTask = (task) => {
     console.debug("[Tasks] Selecting task for editing:", task.id);
+    const tag_ids = resolveTaskTagIds(task);
+
     setEditingTaskId(task.id);
     setForm({
       title: task.title || "",
       description: task.description || "",
       status: task.status || "todo",
       due_date: task.due_date ? toInputDateTime(task.due_date) : "",
+      tag_ids,
     });
     setError("");
     loadRelatedNotes(task.id);
   };
 
+  // ----------------------------
+  // Render
+  // ----------------------------
   return (
-    <div className="page">
+    <div className="page page-tasks">
       <h2 className="page-title">Tasks</h2>
-      <div className="grid-2">
-        {/* New / Edit task form + related notes */}
-        <div className="card form-card">
-          <form onSubmit={handleSubmit}>
-            <div className="flex items-center justify-between">
-              <h3 className="card-title">
-                {editingTaskId ? "Edit task" : "Add task"}
-              </h3>
-              {editingTaskId && (
+
+      {/* Full-width form card */}
+      <div className="card form-card">
+        <form onSubmit={handleSubmit}>
+          <div className="flex items-center justify-between">
+            <h3 className="card-title">
+              {editingTaskId ? "Edit task" : "Add task"}
+            </h3>
+            {editingTaskId && (
+              <div className="flex gap-2">
                 <button
                   type="button"
                   className="secondary-btn"
@@ -482,106 +689,239 @@ const Tasks = () => {
                 >
                   New task
                 </button>
-              )}
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  style={{
+                    borderColor: "#fecaca",
+                    color: "#b91c1c",
+                    background: "#fef2f2",
+                  }}
+                  disabled={isDeleting}
+                  onClick={() => handleDeleteTask(editingTaskId)}
+                >
+                  {isDeleting ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <label className="field-label">
+            Title
+            <input
+              className="field-input"
+              name="title"
+              value={form.title}
+              onChange={handleChange}
+              required
+            />
+          </label>
+
+          <label className="field-label">
+            Description
+            <textarea
+              className="field-input"
+              name="description"
+              value={form.description}
+              onChange={handleChange}
+              rows={3}
+            />
+          </label>
+
+          <label className="field-label">
+            Status
+            <select
+              className="field-input"
+              name="status"
+              value={form.status}
+              onChange={handleChange}
+            >
+              <option value="todo">To Do</option>
+              <option value="in_progress">In Progress</option>
+              <option value="done">Done</option>
+            </select>
+          </label>
+
+          <label className="field-label">
+            Due date
+            <input
+              className="field-input"
+              type="datetime-local"
+              name="due_date"
+              value={form.due_date}
+              onChange={handleChange}
+            />
+          </label>
+
+          {/* Tags selector */}
+          <div className="field-label" style={{ marginTop: "0.75rem" }}>
+            <div className="flex items-center justify-between">
+              <span>Tags</span>
             </div>
+            {tagError && <p className="error-text mt-1">{tagError}</p>}
+            {!allTags.length && !tagError && (
+              <p className="muted text-xs mt-1">
+                No tags yet. Create your first tag below (e.g. "Important", "Work", "Personal").
+              </p>
+            )}
+            {allTags.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-1">
+                {allTags.map((tag) => {
+                  const isSelected = form.tag_ids?.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => toggleTagOnForm(tag.id)}
+                      className="badge"
+                      style={{
+                        borderRadius: "999px",
+                        border: isSelected
+                          ? "1px solid #f97316"
+                          : "1px solid #e2e8f0",
+                        backgroundColor: isSelected
+                          ? tag.color || "#fff7ed"
+                          : "#f8fafc",
+                        padding: "2px 10px",
+                        fontSize: "0.75rem",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "999px",
+                          backgroundColor: tag.color || "#f97316",
+                        }}
+                      />
+                      <span>{tag.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-            <label className="field-label">
-              Title
-              <input
-                className="field-input"
-                name="title"
-                value={form.title}
-                onChange={handleChange}
-                required
-              />
-            </label>
-            <label className="field-label">
-              Description
-              <textarea
-                className="field-input"
-                name="description"
-                value={form.description}
-                onChange={handleChange}
-                rows={3}
-              />
-            </label>
-            <label className="field-label">
-              Status
-              <select
-                className="field-input"
-                name="status"
-                value={form.status}
-                onChange={handleChange}
+          {error && <p className="error-text mt-2">{error}</p>}
+
+          <button className="primary-btn mt-3" type="submit">
+            {editingTaskId ? "Update" : "Save"}
+          </button>
+        </form>
+
+        {/* Related notes for selected task */}
+        {editingTaskId && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between">
+              <h4
+                className="text-sm font-medium"
+                style={{ margin: 0, padding: 0 }}
               >
-                <option value="todo">To Do</option>
-                <option value="in_progress">In Progress</option>
-                <option value="done">Done</option>
-              </select>
-            </label>
-            <label className="field-label">
-              Due date
-              <input
-                className="field-input"
-                type="datetime-local"
-                name="due_date"
-                value={form.due_date}
-                onChange={handleChange}
-              />
-            </label>
+                Related notes
+              </h4>
+            </div>
+            {relatedNotesError && (
+              <p className="error-text mt-1">{relatedNotesError}</p>
+            )}
+            {!relatedNotesError && relatedNotes.length === 0 && (
+              <p className="muted text-xs mt-1">
+                No notes attached to this task yet.
+              </p>
+            )}
+            {relatedNotes.length > 0 && (
+              <ul className="list mt-2">
+                {relatedNotes.map((n) => (
+                  <li key={n.id} className="card" style={{ marginBottom: 6 }}>
+                    <div className="font-medium">{n.title}</div>
+                    <div className="muted text-xs">
+                      {n.job && <span>{n.job} · </span>}
+                      {n.note_type === "daily" ? "Daily note" : "General"}
+                    </div>
+                    <p className="mt-1 text-sm line-clamp-2">{n.content}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
-            {error && <p className="error-text mt-2">{error}</p>}
-
-            <button className="primary-btn mt-2" type="submit">
-              {editingTaskId ? "Update" : "Save"}
+        {/* Create new tag */}
+        <div
+          className="mt-4"
+          style={{
+            marginTop: "1.5rem",
+            paddingTop: "1rem",
+            borderTop: "1px solid #e5e7eb",
+          }}
+        >
+          <h4
+            className="text-sm font-medium"
+            style={{ margin: 0, marginBottom: "0.5rem" }}
+          >
+            Create new tag
+          </h4>
+          <form
+            onSubmit={handleCreateTag}
+            className="flex items-center gap-2"
+          >
+            <input
+              className="field-input"
+              placeholder='e.g. "Important" or "Work"'
+              value={tagFormName}
+              onChange={(e) => setTagFormName(e.target.value)}
+            />
+            <input
+              type="color"
+              value={tagFormColor}
+              onChange={(e) => setTagFormColor(e.target.value)}
+              style={{
+                width: 40,
+                height: 32,
+                padding: 0,
+                borderRadius: 8,
+                border: "1px solid #e2e8f0",
+              }}
+              title="Tag color"
+            />
+            <button type="submit" className="secondary-btn">
+              Add
             </button>
           </form>
-
-          {/* Related notes for selected task */}
-          {editingTaskId && (
-            <div className="mt-4">
-              <div className="flex items-center justify-between">
-                <h4
-                  className="text-sm font-medium"
-                  style={{ margin: 0, padding: 0 }}
-                >
-                  Related notes
-                </h4>
-              </div>
-              {relatedNotesError && (
-                <p className="error-text mt-1">{relatedNotesError}</p>
-              )}
-              {!relatedNotesError && relatedNotes.length === 0 && (
-                <p className="muted text-xs mt-1">
-                  No notes attached to this task yet.
-                </p>
-              )}
-              {relatedNotes.length > 0 && (
-                <ul className="list mt-2">
-                  {relatedNotes.map((n) => (
-                    <li key={n.id} className="card" style={{ marginBottom: 6 }}>
-                      <div className="font-medium">{n.title}</div>
-                      <div className="muted text-xs">
-                        {n.job && <span>{n.job} · </span>}
-                        {n.note_type === "daily" ? "Daily note" : "General"}
-                      </div>
-                      <p className="mt-1 text-sm line-clamp-2">{n.content}</p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
         </div>
+      </div>
 
-        {/* Task list with grouping + drag handle + done checkbox + due date */}
-        <div className="card">
-          <div className="flex items-center justify-between">
+      {/* Full-width tasks list card */}
+      <div className="card tasks-list-card" style={{ marginTop: "1.5rem" }}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
             <h3 className="card-title">Your tasks</h3>
+            <p className="muted text-xs">
+              Click a task to edit. Use search and tags to narrow down.
+            </p>
+          </div>
+
+          <div className="flex flex-col items-end gap-2">
+            {/* Search */}
+            <input
+              type="text"
+              className="field-input"
+              placeholder="Search by title, description, or tag…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{ maxWidth: 260 }}
+            />
+
+            {/* Group mode toggle */}
             <div className="calendar-view-toggle">
               <button
                 type="button"
                 className={
-                  "toggle-btn" + (groupMode === "day" ? " toggle-btn-active" : "")
+                  "toggle-btn" +
+                  (groupMode === "day" ? " toggle-btn-active" : "")
                 }
                 onClick={() => handleGroupModeChange("day")}
               >
@@ -590,7 +930,8 @@ const Tasks = () => {
               <button
                 type="button"
                 className={
-                  "toggle-btn" + (groupMode === "week" ? " toggle-btn-active" : "")
+                  "toggle-btn" +
+                  (groupMode === "week" ? " toggle-btn-active" : "")
                 }
                 onClick={() => handleGroupModeChange("week")}
               >
@@ -599,7 +940,8 @@ const Tasks = () => {
               <button
                 type="button"
                 className={
-                  "toggle-btn" + (groupMode === "month" ? " toggle-btn-active" : "")
+                  "toggle-btn" +
+                  (groupMode === "month" ? " toggle-btn-active" : "")
                 }
                 onClick={() => handleGroupModeChange("month")}
               >
@@ -607,119 +949,164 @@ const Tasks = () => {
               </button>
             </div>
           </div>
+        </div>
 
-          <ul className="list mt-2">
-            {grouped.map((group) => (
-              <li key={group.key} style={{ marginBottom: 8 }}>
-                <div
-                  className="muted text-xs"
-                  style={{
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    marginBottom: 4,
-                  }}
-                >
-                  {group.label}
-                </div>
-                <ul className="list">
-                  {group.items.map(({ task: t, index }) => {
-                    const isDone = t.status === "done";
-                    const dueLabel = formatDueDate(t.due_date);
-                    const isSelected = editingTaskId === t.id;
+        <ul className="list mt-3">
+          {grouped.map((group) => (
+            <li key={group.key} style={{ marginBottom: 8 }}>
+              <div
+                className="muted text-xs"
+                style={{
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                  marginBottom: 4,
+                }}
+              >
+                {group.label}
+              </div>
+              <ul className="list">
+                {group.items.map(({ task: t, index }) => {
+                  const isDone = t.status === "done";
+                  const dueLabel = formatDueDate(t.due_date);
+                  const isSelected = editingTaskId === t.id;
+                  const taskTags = resolveTaskTags(t);
 
-                    return (
-                      <li
-                        key={t.id}
-                        className="flex items-center justify-between gap-4"
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, index)}
-                        onDragOver={(e) => handleDragOver(e, index)}
-                        onDrop={(e) => handleDrop(e, index)}
-                        onDragEnd={handleDragEnd}
-                        onClick={() => handleSelectTask(t)}
+                  return (
+                    <li
+                      key={t.id}
+                      className="flex items-center justify-between gap-4"
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, index)}
+                      onDragOver={(e) => handleDragOver(e, index)}
+                      onDrop={(e) => handleDrop(e, index)}
+                      onDragEnd={handleDragEnd}
+                      onClick={() => handleSelectTask(t)}
+                      style={{
+                        padding: "6px 4px",
+                        borderRadius: "12px",
+                        border:
+                          dragIndex === index
+                            ? "1px dashed #f59e0b"
+                            : isSelected
+                            ? "1px solid #f97316"
+                            : "1px solid transparent",
+                        backgroundColor:
+                          dragIndex === index
+                            ? "#fffbeb"
+                            : isSelected
+                            ? "#fff7ed"
+                            : "transparent",
+                      }}
+                    >
+                      {/* Left: drag handle */}
+                      <div
+                        className="task-handle"
                         style={{
-                          padding: "6px 4px",
-                          borderRadius: "12px",
-                          border:
-                            dragIndex === index
-                              ? "1px dashed #f59e0b"
-                              : isSelected
-                              ? "1px solid #f97316"
-                              : "1px solid transparent",
-                          backgroundColor:
-                            dragIndex === index
-                              ? "#fffbeb"
-                              : isSelected
-                              ? "#fff7ed"
-                              : "transparent",
+                          width: 32,
+                          height: 32,
+                          borderRadius: 999,
+                          border: "1px solid #e2e8f0",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "grab",
+                          backgroundColor: "white",
                         }}
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        {/* Left: sandwich drag handle */}
-                        <div
-                          className="task-handle"
-                          style={{
-                            width: 32,
-                            height: 32,
-                            borderRadius: 999,
-                            border: "1px solid #e2e8f0",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            cursor: "grab",
-                            backgroundColor: "white",
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <FaGripLines className="muted" />
-                        </div>
+                        <FaGripLines className="muted" />
+                      </div>
 
-                        {/* Middle: checkbox + text + due date */}
-                        <div
-                          className="flex items-center gap-4"
-                          style={{ flex: 1, marginLeft: 8 }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isDone}
-                            onChange={() => handleToggleDone(t, index)}
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          <div>
-                            <div
-                              className="font-medium"
-                              style={{
-                                textDecoration: isDone
-                                  ? "line-through"
-                                  : "none",
-                                opacity: isDone ? 0.6 : 1,
-                              }}
-                            >
-                              {t.title}
-                            </div>
+                      {/* Middle: checkbox + content */}
+                      <div
+                        className="flex items-start gap-4"
+                        style={{ flex: 1, marginLeft: 8 }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isDone}
+                          onChange={() => handleToggleDone(t, index)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ marginTop: 4 }}
+                        />
+                        <div>
+                          <div
+                            className="font-medium"
+                            style={{
+                              textDecoration: isDone ? "line-through" : "none",
+                              opacity: isDone ? 0.6 : 1,
+                            }}
+                          >
+                            {t.title}
+                          </div>
+                          {t.description && (
                             <div className="muted text-xs line-clamp-2">
                               {t.description}
                             </div>
-                            <div className="muted text-xs mt-1">
-                              <strong>Due:</strong> {dueLabel}
-                            </div>
+                          )}
+                          <div className="muted text-xs mt-1">
+                            <strong>Due:</strong> {dueLabel}
                           </div>
-                        </div>
 
-                        {/* Status pill */}
+                          {/* Task tags display */}
+                          {taskTags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {taskTags.map((tag) => (
+                                <span
+                                  key={tag.id}
+                                  className="badge"
+                                  style={{
+                                    borderRadius: 999,
+                                    padding: "1px 8px",
+                                    fontSize: "0.7rem",
+                                    backgroundColor:
+                                      tag.color || "#f3f4f6",
+                                    border: "1px solid #e5e7eb",
+                                  }}
+                                >
+                                  {tag.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right: status + inline delete */}
+                      <div className="flex items-center gap-2">
                         <span className={`badge badge-${t.status}`}>
                           {t.status.replace("_", " ")}
                         </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </li>
-            ))}
-            {!tasks.length && !error && (
-              <li className="muted">No tasks yet.</li>
-            )}
-          </ul>
-        </div>
+                        <button
+                          type="button"
+                          className="text-xs"
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "#b91c1c",
+                            cursor: "pointer",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteTask(t.id);
+                          }}
+                        >
+                          delete
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </li>
+          ))}
+          {!tasks.length && !error && (
+            <li className="muted">No tasks yet.</li>
+          )}
+          {tasks.length > 0 && grouped.length === 0 && (
+            <li className="muted">No tasks match your search.</li>
+          )}
+        </ul>
       </div>
     </div>
   );

@@ -29,7 +29,7 @@ const Contacts = () => {
   };
 
   return (
-    <div className="page">
+    <div className="page page-contacts">
       <h2 className="page-title">Contacts</h2>
       <div className="grid-2">
         <form onSubmit={handleSubmit} className="card form-card">

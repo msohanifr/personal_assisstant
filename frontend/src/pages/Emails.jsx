@@ -9,18 +9,26 @@ import client from "../api/client";
  * - Filters messages by account
  * - Search over subject, from, to, body
  * - Filter by date: all / day / month / year
- * - Master/detail layout
+ * - Master/detail layout:
+ *     - List-only view (Gmail-style)
+ *     - Full-width detail view with "Back to list" button
+ * - Pagination (20 messages per page)
  * - Auto-sync current account every minute
  * - AI button to create tasks & notes from an email
  */
+
+const PAGE_SIZE = 20;
 
 const Emails = () => {
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
+
   const [search, setSearch] = useState("");
   const [dateMode, setDateMode] = useState("all"); // "all" | "day" | "month" | "year"
+  const [page, setPage] = useState(1); // pagination page (1-based)
+
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState("");
@@ -30,8 +38,12 @@ const Emails = () => {
   const [aiResult, setAiResult] = useState(null);
   const [aiError, setAiError] = useState("");
 
-  // --- Load accounts ---
+  // View mode: "list" (Gmail-like) or "detail" (single email)
+  const [viewMode, setViewMode] = useState("list");
 
+  // ----------------------------
+  // Load accounts
+  // ----------------------------
   const loadAccounts = async () => {
     setLoadingAccounts(true);
     setError("");
@@ -69,14 +81,21 @@ const Emails = () => {
     setSelectedMessage(null);
     setAiResult(null);
     setAiError("");
+    setViewMode("list");
   };
 
   const handleSearchChange = (e) => {
     setSearch(e.target.value);
   };
 
-  // --- Load messages when account or search changes ---
+  // Whenever filters that affect the list change, reset to page 1
+  useEffect(() => {
+    setPage(1);
+  }, [selectedAccountId, search, dateMode]);
 
+  // ----------------------------
+  // Load messages when account or search changes
+  // ----------------------------
   const fetchMessages = async (accountId, currentSearch) => {
     if (!accountId) {
       setMessages([]);
@@ -117,8 +136,9 @@ const Emails = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAccountId, search]);
 
-  // --- Sync handler (manual + auto) ---
-
+  // ----------------------------
+  // Sync handler (manual + auto)
+  // ----------------------------
   const handleSync = async (silent = false) => {
     if (!currentAccount) return;
     if (!silent) {
@@ -145,8 +165,7 @@ const Emails = () => {
     }
   };
 
-  // --- Auto-sync every minute for the current account ---
-
+  // Auto-sync every minute for the current account
   useEffect(() => {
     if (!currentAccount) return;
 
@@ -168,6 +187,9 @@ const Emails = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentAccount?.id, search]);
 
+  // ----------------------------
+  // Filters + pagination + selection
+  // ----------------------------
   const handleDateModeChange = (mode) => {
     console.debug("[Emails] Changing date filter to:", mode);
     setDateMode(mode);
@@ -178,9 +200,8 @@ const Emails = () => {
     setSelectedMessage(msg);
     setAiResult(null);
     setAiError("");
+    setViewMode("detail");
   };
-
-  // --- Date filtering helpers ---
 
   const filteredMessages = useMemo(() => {
     if (!messages.length) return [];
@@ -231,21 +252,34 @@ const Emails = () => {
   const totalCount = messages.length;
   const filteredCount = filteredMessages.length;
 
-  // Keep selectedMessage in sync with filteredMessages
+  // Pagination calculations
+  const totalPages = filteredCount
+    ? Math.ceil(filteredCount / PAGE_SIZE)
+    : 1;
+  const safePage = Math.min(page, totalPages);
+  const startIndex = filteredCount ? (safePage - 1) * PAGE_SIZE : 0;
+  const endIndex = filteredCount
+    ? Math.min(startIndex + PAGE_SIZE, filteredCount)
+    : 0;
+  const pagedMessages = filteredCount
+    ? filteredMessages.slice(startIndex, endIndex)
+    : [];
+
+  const handlePageChange = (newPage) => {
+    console.debug("[Emails] handlePageChange:", { newPage, totalPages });
+    if (newPage < 1 || newPage > totalPages) return;
+    setPage(newPage);
+  };
+
+  // If the selected message disappears due to filters, go back to list
   useEffect(() => {
-    if (!filteredMessages.length) {
-      setSelectedMessage(null);
-      return;
-    }
-    if (!selectedMessage) {
-      setSelectedMessage(filteredMessages[0]);
-      return;
-    }
+    if (!selectedMessage) return;
     const stillExists = filteredMessages.some(
       (m) => m.id === selectedMessage.id
     );
     if (!stillExists) {
-      setSelectedMessage(filteredMessages[0]);
+      setSelectedMessage(null);
+      setViewMode("list");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredMessages]);
@@ -258,8 +292,9 @@ const Emails = () => {
     return "";
   })();
 
-  // --- AI: analyze email -> create tasks & notes ---
-
+  // ----------------------------
+  // AI: analyze email -> create tasks & notes
+  // ----------------------------
   const handleAnalyze = async () => {
     if (!selectedMessage) return;
     setAiLoading(true);
@@ -286,12 +321,16 @@ const Emails = () => {
     }
   };
 
+  // ----------------------------
+  // Render
+  // ----------------------------
   return (
-    <div className="page">
-      <h2 className="page-title">Emails</h2>
-      <div className="grid-2">
-        {/* LEFT: accounts + message list */}
-        <div className="card">
+    <div className="page page-emails">
+    <h2 className="page-title">Emails</h2>
+
+      {/* LIST VIEW (Gmail-like) */}
+      {viewMode === "list" && (
+        <div className="card email-master-card">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="card-title">
@@ -404,54 +443,42 @@ const Emails = () => {
           ) : null}
           {error && <p className="error-text mt-2">{error}</p>}
 
-          {/* Messages list */}
+          {/* Messages list (Gmail-style rows) */}
           <ul
-            className="list mt-2"
-            style={{ maxHeight: 480, overflowY: "auto" }}
+            className="list mt-2 email-list"
+            style={{ maxHeight: 520, overflowY: "auto" }}
           >
-            {filteredMessages.map((m) => {
-              const isActive =
-                selectedMessage && selectedMessage.id === m.id;
-              return (
-                <li
-                  key={m.id}
-                  className="card"
-                  style={{
-                    marginBottom: 6,
-                    cursor: "pointer",
-                    borderColor: isActive ? "#f97316" : "#e2e8f0",
-                    boxShadow: isActive
-                      ? "0 0 0 1px #f97316"
-                      : "0 12px 30px rgba(15,23,42,0.04)",
-                  }}
-                  onClick={() => handleSelectMessage(m)}
-                >
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <div className="font-medium">
-                        {m.subject || "(no subject)"}
-                      </div>
-                      <div className="muted text-xs">
-                        {m.from_email || "(unknown sender)"}
-                      </div>
+            {pagedMessages.map((m) => (
+              <li
+                key={m.id}
+                className="email-list-item"
+                onClick={() => handleSelectMessage(m)}
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-medium">
+                      {m.subject || "(no subject)"}
                     </div>
-                    <div className="text-xs muted">
-                      {m.sent_at &&
-                        new Date(m.sent_at).toLocaleString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
+                    <div className="muted text-xs">
+                      {m.from_email || "(unknown sender)"}
                     </div>
                   </div>
-                  <p className="mt-1 text-sm line-clamp-2">
-                    {m.body_text || ""}
-                  </p>
-                </li>
-              );
-            })}
-            {!loadingMessages && !filteredMessages.length && (
+                  <div className="text-xs muted">
+                    {m.sent_at &&
+                      new Date(m.sent_at).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                  </div>
+                </div>
+                <p className="mt-1 text-sm line-clamp-2">
+                  {m.body_text || ""}
+                </p>
+              </li>
+            ))}
+            {!loadingMessages && !pagedMessages.length && (
               <li className="muted text-xs mt-2">
                 {currentAccount
                   ? "No emails matching your filters for this account."
@@ -459,12 +486,57 @@ const Emails = () => {
               </li>
             )}
           </ul>
-        </div>
 
-        {/* RIGHT: message content + AI actions */}
-        <div className="card">
+          {/* Pagination footer */}
+          {filteredCount > 0 && (
+            <div className="flex items-center justify-between mt-3 text-xs muted">
+              <div>
+                Showing {startIndex + 1}–{endIndex} of {filteredCount} emails
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  style={{ padding: "4px 10px", fontSize: "0.75rem" }}
+                  disabled={safePage <= 1}
+                  onClick={() => handlePageChange(safePage - 1)}
+                >
+                  Previous
+                </button>
+                <span>
+                  Page {safePage} of {totalPages}
+                </span>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  style={{ padding: "4px 10px", fontSize: "0.75rem" }}
+                  disabled={safePage >= totalPages}
+                  onClick={() => handlePageChange(safePage + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* DETAIL VIEW (full email + back button) */}
+      {viewMode === "detail" && (
+        <div className="card email-detail-card">
           <div className="flex items-center justify-between">
-            <h3 className="card-title">Details</h3>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="secondary-btn text-xs"
+                onClick={() => setViewMode("list")}
+              >
+                ← Back to message list
+              </button>
+              <h3 className="card-title" style={{ marginBottom: 0 }}>
+                Email details
+              </h3>
+            </div>
             {selectedMessage && (
               <button
                 type="button"
@@ -479,10 +551,10 @@ const Emails = () => {
 
           {!selectedMessage ? (
             <p className="muted text-sm mt-2">
-              Select an email on the left to read it here.
+              No email selected. Go back to the list and pick a message.
             </p>
           ) : (
-            <div className="mt-2">
+            <div className="mt-3">
               <div className="text-sm muted">
                 <div>
                   <strong>From:</strong> {selectedMessage.from_email}
@@ -507,22 +579,24 @@ const Emails = () => {
                   </div>
                 )}
               </div>
+
               <h4
                 style={{
                   fontSize: "1.05rem",
                   fontWeight: 600,
-                  marginTop: 10,
+                  marginTop: 12,
                   marginBottom: 8,
                 }}
               >
                 {selectedMessage.subject || "(no subject)"}
               </h4>
+
               <div
                 className="text-sm"
                 style={{
                   whiteSpace: "pre-wrap",
                   lineHeight: 1.5,
-                  maxHeight: 320,
+                  maxHeight: 420,
                   overflowY: "auto",
                 }}
               >
@@ -569,12 +643,11 @@ const Emails = () => {
             </div>
           )}
         </div>
-      </div>
+      )}
 
       <p className="muted text-xs mt-4">
         Auto-sync runs every minute for the selected account. The AI button
-        above can turn an email into actionable tasks and notes in your
-        workspace.
+        can turn an email into actionable tasks and notes in your workspace.
       </p>
     </div>
   );
