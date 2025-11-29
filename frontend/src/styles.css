@@ -1594,9 +1594,9 @@ html,
 /* ===== FIX TASKS PAGE COLORS ===== */
 
 .page-tasks,
-.page-tasks * {
-  background-color: #ffffff !important;
-  color: #111827 !important;
+.page-tasks {
+  background-color: #ffffff;
+  color: #111827;
 }
 
 /* Restore specific design elements AFTER forcing white */

@@ -114,12 +114,12 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
 
         account = params.get("account")
         if account:
-          try:
-              qs = qs.filter(account_id=int(account))
-          except ValueError:
-              logger.warning(
-                  "EmailMessageViewSet: invalid account param '%s'", account
-              )
+            try:
+                qs = qs.filter(account_id=int(account))
+            except ValueError:
+                logger.warning(
+                    "EmailMessageViewSet: invalid account param '%s'", account
+                )
 
         folder = params.get("folder")
         if folder:
@@ -139,6 +139,48 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
         return qs.order_by("-sent_at")
+
+    @action(detail=False, methods=["get"], url_path="unread-count")
+    def unread_count(self, request, *args, **kwargs):
+        """
+        Return the unread email count for the current user.
+
+        Optional filters:
+          - account: ?account=<account_id>
+          - folder:  ?folder=INBOX
+        """
+        user = request.user
+        params = request.query_params
+
+        logger.info(
+            "EmailMessageViewSet.unread_count called for user=%s with params=%s",
+            user,
+            dict(params),
+        )
+
+        qs = EmailMessage.objects.filter(user=user, is_read=False)
+
+        account = params.get("account")
+        if account:
+            try:
+                qs = qs.filter(account_id=int(account))
+            except ValueError:
+                logger.warning(
+                    "EmailMessageViewSet.unread_count: invalid account param '%s'",
+                    account,
+                )
+
+        folder = params.get("folder")
+        if folder:
+            qs = qs.filter(folder=folder)
+
+        unread = qs.count()
+        logger.debug(
+            "EmailMessageViewSet.unread_count: user=%s, unread=%s",
+            user,
+            unread,
+        )
+        return Response({"unread": unread})
 
     @action(detail=True, methods=["post"])
     def analyze(self, request, pk=None):
