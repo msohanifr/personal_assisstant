@@ -206,7 +206,47 @@ const Calendar = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  const [showEventForm, setShowEventForm] = useState(false); // 👈 NEW
+
+    const [resizingEventId, setResizingEventId] = useState(null);
+  const [resizingData, setResizingData] = useState(null);
+
   const pomodoro = usePomodoro(25);
+
+    const saveResizedEvent = async (ev) => {
+    try {
+      await client.put(`/events/${ev.id}/`, {
+        title: ev.title,
+        description: ev.description,
+        location: ev.location,
+        start: ev._startDate.toISOString(),
+        end: ev._endDate.toISOString(),
+      });
+    } catch (err) {
+      console.error("[Calendar] Failed to save resized event:", err);
+      setError("Could not update event time. Please try again.");
+    }
+  };
+
+    const handleResizeStart = (date, ev, mouseEvent) => {
+    // Only allow resizing real events, not the draft placeholder
+    if (ev.id === "__draft__") return;
+
+    const day = startOfDay(date);
+
+    setResizingEventId(ev.id);
+    setResizingData({
+      day,
+      eventId: ev.id,
+      originalStart: ev._startDate,
+      originalEnd: ev._endDate,
+      startClientY: mouseEvent.clientY,
+    });
+
+    // Prevent text selection while dragging
+    mouseEvent.preventDefault();
+    mouseEvent.stopPropagation();
+  };
 
   const loadEvents = async () => {
     try {
@@ -231,9 +271,62 @@ const Calendar = () => {
     loadEvents();
   }, []);
 
+    useEffect(() => {
+    if (!resizingEventId || !resizingData) return;
+
+    const handleMouseMove = (e) => {
+      const deltaY = e.clientY - resizingData.startClientY;
+      // Convert pixels → minutes, snap to 15 min
+      const rawDeltaMinutes = deltaY / PIXELS_PER_MINUTE;
+      const snappedDelta =
+        Math.round(rawDeltaMinutes / 15) * 15;
+
+      const originalEnd = resizingData.originalEnd;
+      const newEnd = new Date(originalEnd);
+      newEnd.setMinutes(originalEnd.getMinutes() + snappedDelta);
+
+      // Clamp into the visible day range
+      const dayStart = new Date(resizingData.day);
+      dayStart.setHours(HOURS_START, 0, 0, 0);
+      const dayEnd = new Date(resizingData.day);
+      dayEnd.setHours(HOURS_END, 59, 59, 999);
+
+      if (newEnd < dayStart) newEnd.setTime(dayStart.getTime());
+      if (newEnd > dayEnd) newEnd.setTime(dayEnd.getTime());
+
+      setEvents((prev) =>
+        prev.map((ev) =>
+          ev.id === resizingEventId ? { ...ev, _endDate: newEnd } : ev
+        )
+      );
+    };
+
+    const handleMouseUp = async () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+
+      const updated = events.find((ev) => ev.id === resizingEventId);
+      if (updated) {
+        await saveResizedEvent(updated);
+      }
+
+      setResizingEventId(null);
+      setResizingData(null);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [resizingEventId, resizingData, events]);
+
   const resetForm = () => {
     setForm(EMPTY_EVENT);
     setEditingEventId(null);
+    setShowEventForm(false); // 👈 hide form
   };
 
   const handleFieldChange = (e) => {
@@ -241,30 +334,43 @@ const Calendar = () => {
     setForm((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmitEvent = async (e) => {
-    e.preventDefault();
-    setError("");
+const handleSubmitEvent = async (e) => {
+  e.preventDefault();
+  setError("");
 
-    if (!form.title || !form.start || !form.end) {
-      setError("Please provide at least title, start and end time.");
-      return;
-    }
+  if (!form.title || !form.start || !form.end) {
+    setError("Please provide at least title, start and end time.");
+    return;
+  }
 
-    const payload = { ...form };
+  // 🔧 Normalize local datetime-local strings → ISO UTC for backend
+  const startDate = new Date(form.start);
+  const endDate = new Date(form.end);
 
-    try {
-      if (editingEventId) {
-        await client.put(`/events/${editingEventId}/`, payload);
-      } else {
-        await client.post("/events/", payload);
-      }
-      resetForm();
-      await loadEvents();
-    } catch (err) {
-      console.error("[Calendar] Failed to save event:", err);
-      setError("Could not save event. Please try again.");
-    }
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    setError("Invalid date/time selected.");
+    return;
+  }
+
+  const payload = {
+    ...form,
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
   };
+
+  try {
+    if (editingEventId) {
+      await client.put(`/events/${editingEventId}/`, payload);
+    } else {
+      await client.post("/events/", payload);
+    }
+    resetForm();
+    await loadEvents();
+  } catch (err) {
+    console.error("[Calendar] Failed to save event:", err);
+    setError("Could not save event. Please try again.");
+  }
+};
 
   const handleDeleteEvent = async () => {
     if (!editingEventId) return;
@@ -315,6 +421,7 @@ const Calendar = () => {
       start: toLocalInputValue(start),
       end: toLocalInputValue(end),
     }));
+    setShowEventForm(true);
   };
 
   const handleToday = () => {
@@ -379,6 +486,8 @@ const Calendar = () => {
       start: toLocalInputValue(ev._startDate),
       end: toLocalInputValue(ev._endDate),
     });
+
+    setShowEventForm(true);
   };
 
   const monthLabel = useMemo(() => {
@@ -450,6 +559,28 @@ const Calendar = () => {
 
     return { channels, days, grid };
   }, [events, currentDate]);
+
+  // ---------- Draft event preview (for new events) ----------
+  const draftEvent = useMemo(() => {
+    // Only show preview while creating a *new* event,
+    // not while editing an existing one.
+    if (!showEventForm || editingEventId || !form.start || !form.end) {
+      return null;
+    }
+
+    const start = new Date(form.start);
+    const end = new Date(form.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return null;
+    }
+
+    return {
+      id: "__draft__",
+      title: form.title || "New event",
+      _startDate: start,
+      _endDate: end,
+    };
+  }, [showEventForm, editingEventId, form.start, form.end, form.title]);
 
   /* ---------- Views ---------- */
 
@@ -548,6 +679,21 @@ const Calendar = () => {
             const isSelected = sameDay(date, selectedDate);
             const dayEvents = eventsForDate(date);
 
+            // Determine whether the draft event overlaps this day
+            const dayStart = startOfDay(date);
+            const dayEnd = endOfDay(date);
+            const draftForDay =
+              draftEvent &&
+                draftEvent._startDate <= dayEnd &&
+                draftEvent._endDate >= dayStart
+                ? draftEvent
+                : null;
+
+            // Combine real events + draft preview (if present)
+            const allEvents = draftForDay
+              ? [...dayEvents, draftForDay]
+              : dayEvents;
+
             return (
               <div
                 key={date.toISOString()}
@@ -579,10 +725,9 @@ const Calendar = () => {
                       onClick={() => handleTimeSlotClick(date, hour)}
                     />
                   ))}
-                  {dayEvents.map((ev) => {
+
+                  {allEvents.map((ev) => {
                     // clip multi-day events to this day
-                    const dayStart = startOfDay(date);
-                    const dayEnd = endOfDay(date);
                     const segmentStart =
                       ev._startDate < dayStart ? dayStart : ev._startDate;
                     const segmentEnd =
@@ -601,17 +746,25 @@ const Calendar = () => {
                       32
                     );
 
+                    const isDraft = ev.id === "__draft__";
+
                     return (
                       <div
                         key={ev.id + date.toISOString()}
                         className={
-                          "calendar-event-block " + getEventColorClass(ev)
+                          "calendar-event-block " +
+                          (isDraft
+                            ? "calendar-event-block-draft"
+                            : getEventColorClass(ev))
                         }
                         style={{ top, height }}
                         title={ev.title}
                         onClick={(e) => {
-                          e.stopPropagation();
-                          handleEditEvent(ev);
+                          // For real events, allow editing
+                          if (!isDraft) {
+                            e.stopPropagation();
+                            handleEditEvent(ev);
+                          }
                         }}
                       >
                         <div className="calendar-event-block-title">
@@ -628,6 +781,13 @@ const Calendar = () => {
                             minute: "2-digit",
                           })}
                         </div>
+                        {/* 🔧 Resize handle for real events */}
+    {!isDraft && (
+      <div
+        className="calendar-event-resize-handle"
+        onMouseDown={(e) => handleResizeStart(date, ev, e)}
+      />
+    )}
                       </div>
                     );
                   })}
@@ -803,21 +963,21 @@ const Calendar = () => {
                     {cellEvents.length === 0
                       ? null
                       : cellEvents.map((ev) => (
-                          <div
-                            key={ev.id}
-                            className={
-                              "calendar-marketing-chip " +
-                              getEventColorClass(ev)
-                            }
-                            title={ev.title}
-                            onClick={() => handleEditEvent(ev)}
-                          >
-                            <span className="calendar-event-dot" />
-                            <span className="calendar-event-title">
-                              {ev.title}
-                            </span>
-                          </div>
-                        ))}
+                        <div
+                          key={ev.id}
+                          className={
+                            "calendar-marketing-chip " +
+                            getEventColorClass(ev)
+                          }
+                          title={ev.title}
+                          onClick={() => handleEditEvent(ev)}
+                        >
+                          <span className="calendar-event-dot" />
+                          <span className="calendar-event-title">
+                            {ev.title}
+                          </span>
+                        </div>
+                      ))}
                   </div>
                 );
               })}
@@ -901,47 +1061,42 @@ const Calendar = () => {
           {error && <div className="error-banner">{error}</div>}
           {renderCurrentView()}
         </div>
+      </div>
 
-        <aside className="calendar-right-pane">
-          <section className="card calendar-card">
-            <div className="calendar-card-header">
-              <FaRegClock />
-              <div>
-                <div className="calendar-card-title">Today</div>
-                <div className="calendar-card-sub">
-                  {todayEventsCount} event
-                  {todayEventsCount === 1 ? "" : "s"} scheduled
+            {/* Event form modal */}
+      {showEventForm && (
+        <div
+          className="calendar-modal-backdrop"
+          onClick={resetForm} // click outside to close
+        >
+          <div
+            className="calendar-modal"
+            onClick={(e) => e.stopPropagation()} // keep clicks inside from closing
+          >
+            <div className="calendar-modal-header">
+              <div className="calendar-modal-title-wrap">
+                <FaCalendarAlt />
+                <div>
+                  <div className="calendar-modal-title">
+                    {isEditing ? "Edit event" : "New event"}
+                  </div>
+                  <div className="calendar-modal-subtitle">
+                    {isEditing
+                      ? "Update or delete the selected event."
+                      : "Pick a time on the calendar, then fill in the details."}
+                  </div>
                 </div>
               </div>
+              <button
+                type="button"
+                className="icon-btn calendar-modal-close-btn"
+                onClick={resetForm}
+                aria-label="Close"
+              >
+                ✕
+              </button>
             </div>
-            <button
-              type="button"
-              className="secondary-btn calendar-focus-day-btn"
-              onClick={() => {
-                const today = startOfDay(new Date());
-                setSelectedDate(today);
-                setCurrentDate(today);
-                setView("day");
-              }}
-            >
-              Focus on today
-            </button>
-          </section>
 
-          <section className="card calendar-card">
-            <div className="calendar-card-header">
-              <FaCalendarAlt />
-              <div>
-                <div className="calendar-card-title">
-                  {isEditing ? "Edit event" : "Quick event"}
-                </div>
-                <div className="calendar-card-sub">
-                  {isEditing
-                    ? "Update or delete the selected event."
-                    : "Minimal friction to add something to your calendar."}
-                </div>
-              </div>
-            </div>
             <form className="calendar-form" onSubmit={handleSubmitEvent}>
               <label className="field-label">
                 Title
@@ -955,6 +1110,7 @@ const Calendar = () => {
                   required
                 />
               </label>
+
               <div className="calendar-form-row">
                 <label className="field-label">
                   Start
@@ -979,6 +1135,7 @@ const Calendar = () => {
                   />
                 </label>
               </div>
+
               <label className="field-label">
                 Location / channel
                 <input
@@ -990,6 +1147,7 @@ const Calendar = () => {
                   placeholder="Zoom, office, Instagram, newsletter…"
                 />
               </label>
+
               <label className="field-label">
                 Notes
                 <textarea
@@ -1014,62 +1172,30 @@ const Calendar = () => {
                   {isEditing ? "Update event" : "Save event"}
                 </button>
 
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={resetForm}
+                >
+                  <FaUndo style={{ marginRight: 4 }} />
+                  Cancel
+                </button>
+
                 {isEditing && (
-                  <>
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={resetForm}
-                    >
-                      <FaUndo style={{ marginRight: 4 }} />
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      onClick={handleDeleteEvent}
-                      title="Delete event"
-                    >
-                      <FaTrash />
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={handleDeleteEvent}
+                    title="Delete event"
+                  >
+                    <FaTrash />
+                  </button>
                 )}
               </div>
             </form>
-          </section>
-
-          <section className="card calendar-card">
-            <div className="calendar-card-header">
-              <FaRegClock />
-              <div>
-                <div className="calendar-card-title">Focus timer</div>
-                <div className="calendar-card-sub">
-                  Simple Pomodoro-style focus block.
-                </div>
-              </div>
-            </div>
-            <div className="pomodoro-timer">
-              <div className="pomodoro-display">{pomodoro.label}</div>
-              <div className="pomodoro-actions">
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={pomodoro.toggle}
-                >
-                  {pomodoro.running ? <FaPause /> : <FaPlay />}
-                </button>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={pomodoro.reset}
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
-          </section>
-        </aside>
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
