@@ -1,5 +1,6 @@
 // frontend/src/pages/Tasks.jsx
 import React, { useEffect, useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { FaGripLines } from "react-icons/fa";
 import client from "../api/client";
 
@@ -12,6 +13,8 @@ const emptyTask = {
 };
 
 const Tasks = () => {
+  const [searchParams] = useSearchParams();
+
   const [tasks, setTasks] = useState([]);
   const [form, setForm] = useState(emptyTask);
   const [error, setError] = useState("");
@@ -665,6 +668,31 @@ const Tasks = () => {
     setError("");
     loadRelatedNotes(task.id);
   };
+
+    // ----------------------------
+  // Pre-select task from URL (?taskId=...)
+  // ----------------------------
+  useEffect(() => {
+    const taskIdParam = searchParams.get("taskId");
+    if (!taskIdParam || !tasks.length) return;
+
+    const id = Number(taskIdParam);
+    if (!Number.isFinite(id)) {
+      console.warn("[Tasks] Invalid taskId query param:", taskIdParam);
+      return;
+    }
+
+    if (editingTaskId === id) return;
+
+    const target = tasks.find((t) => t.id === id);
+    if (!target) {
+      console.warn("[Tasks] No task found for id from URL:", id);
+      return;
+    }
+
+    console.debug("[Tasks] Selecting task from URL:", id);
+    handleSelectTask(target);
+  }, [searchParams, tasks, editingTaskId]);
 
   // ----------------------------
   // Render

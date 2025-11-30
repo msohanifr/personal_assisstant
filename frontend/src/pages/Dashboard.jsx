@@ -1,8 +1,11 @@
 // frontend/src/pages/Dashboard.jsx
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import client from "../api/client";
 
 const Dashboard = () => {
+  const navigate = useNavigate();
+
   const [summary, setSummary] = useState({
     topTasks: [],
     upcomingEvents: [],
@@ -399,14 +402,12 @@ const Dashboard = () => {
 
   const focusLine =
     kpis.overdueTasks > 0
-      ? `You have ${kpis.overdueTasks} overdue task${
-          kpis.overdueTasks === 1 ? "" : "s"
-        } to clear.`
+      ? `You have ${kpis.overdueTasks} overdue task${kpis.overdueTasks === 1 ? "" : "s"
+      } to clear.`
       : kpis.tasksToday > 0
-      ? `You have ${kpis.tasksToday} task${
-          kpis.tasksToday === 1 ? "" : "s"
+        ? `You have ${kpis.tasksToday} task${kpis.tasksToday === 1 ? "" : "s"
         } due today.`
-      : "No deadlines today — great moment for deep work or planning.";
+        : "No deadlines today — great moment for deep work or planning.";
 
   // Weather helpers
   const renderWeatherLine = () => {
@@ -441,8 +442,8 @@ const Dashboard = () => {
       tempC != null
         ? `${Math.round(tempC)}°C`
         : tempF != null
-        ? `${Math.round(tempF)}°F`
-        : "";
+          ? `${Math.round(tempF)}°F`
+          : "";
 
     const placePart =
       city || country ? `${city}${city && country ? ", " : ""}${country}` : "";
@@ -577,7 +578,8 @@ const Dashboard = () => {
             {summary.topTasks.map((t) => (
               <li
                 key={t.id}
-                className="flex items-center justify-between gap-2"
+                className="flex items-center justify-between gap-2 cursor-pointer"
+                onClick={() => navigate(`/tasks?taskId=${t.id}`)}
               >
                 <div>
                   <div className="font-medium">{t.title}</div>
@@ -591,7 +593,7 @@ const Dashboard = () => {
               </li>
             ))}
             {!summary.topTasks.length && (
-              <li className="muted">No tasks yet.</li>
+              <li className="muted">No tasks yet. Add one on the Tasks tab.</li>
             )}
           </ul>
         </section>
