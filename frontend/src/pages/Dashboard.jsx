@@ -1,7 +1,30 @@
-// frontend/src/pages/Dashboard.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import client from "../api/client";
+
+import {
+  ResponsiveContainer,
+  RadialBarChart,
+  RadialBar,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
+
+const STATUS_COLORS = {
+  todo: "#f97316",         // orange
+  in_progress: "#3b82f6",  // blue
+  done: "#22c55e",         // green
+};
+
+const INFO_COLORS = ["#4f46e5", "#22c55e", "#ec4899", "#0ea5e9"];
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -17,6 +40,7 @@ const Dashboard = () => {
   });
 
   const [allTags, setAllTags] = useState([]);
+  const [allTasks, setAllTasks] = useState([]);
 
   const [kpis, setKpis] = useState({
     // Tasks
@@ -62,7 +86,8 @@ const Dashboard = () => {
     data: null,
   });
 
-  // ---- Tag helpers (same logic as Tasks.jsx) ----
+  /* ---------- Helpers ---------- */
+
   const resolveTaskTagIds = (task) => {
     if (!task) return [];
     if (Array.isArray(task.tag_ids)) {
@@ -97,6 +122,41 @@ const Dashboard = () => {
     return d;
   };
 
+  const formatEventTime = (value) => {
+    if (!value) return "No date";
+    try {
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return value;
+      return d.toLocaleString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (err) {
+      console.error("[Dashboard] Error formatting event time:", err, value);
+      return value;
+    }
+  };
+
+  const formatDueDate = (value) => {
+    if (!value) return "No due date";
+    try {
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return value;
+      return d.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (err) {
+      console.error("[Dashboard] Error formatting due date:", err, value);
+      return value;
+    }
+  };
+
   // Tick clock every minute
   useEffect(() => {
     const id = setInterval(() => {
@@ -104,9 +164,11 @@ const Dashboard = () => {
         ...prev,
         now: new Date(),
       }));
-    }, 60_000); // 1 minute
+    }, 60_000);
     return () => clearInterval(id);
   }, []);
+
+  /* ---------- Fetch data ---------- */
 
   useEffect(() => {
     const fetchData = async () => {
@@ -153,8 +215,15 @@ const Dashboard = () => {
         const tags = tagsRes.data || [];
 
         setAllTags(tags);
+        setAllTasks(tasks);
 
         console.debug("[Dashboard] Raw tags:", tags);
+        console.debug("[Dashboard] Raw tasks:", tasks);
+        console.debug("[Dashboard] Raw events:", events);
+        console.debug("[Dashboard] Raw notes:", notes);
+        console.debug("[Dashboard] Raw contacts:", contacts);
+        console.debug("[Dashboard] Raw emails:", emails);
+        console.debug("[Dashboard] Weather:", weatherData);
 
         // Update weather state (non-fatal if null)
         setWeather({
@@ -163,17 +232,11 @@ const Dashboard = () => {
           data: weatherData,
         });
 
-        console.debug("[Dashboard] Raw tasks:", tasks);
-        console.debug("[Dashboard] Raw events:", events);
-        console.debug("[Dashboard] Raw notes:", notes);
-        console.debug("[Dashboard] Raw contacts:", contacts);
-        console.debug("[Dashboard] Raw emails:", emails);
-        console.debug("[Dashboard] Weather:", weatherData);
-
         const now = new Date();
         now.setSeconds(0, 0);
 
-        // ---------- TASKS STATS ----------
+        /* ---------- TASKS STATS ---------- */
+
         let totalTasks = tasks.length;
         let tasksToday = 0;
         let overdueTasksCount = 0;
@@ -219,7 +282,8 @@ const Dashboard = () => {
         });
         const overdueTasksPreview = overdueTasksList.slice(0, 5);
 
-        // ---------- EVENTS STATS ----------
+        /* ---------- EVENTS STATS ---------- */
+
         let eventsToday = 0;
         let nextEvent = null;
         let eventsThisWeek = 0;
@@ -262,15 +326,15 @@ const Dashboard = () => {
 
         const upcomingEventsPreview = upcomingEvents.slice(0, 5);
 
-        // ---------- NOTES STATS ----------
+        /* ---------- NOTES STATS ---------- */
+
         const notesCount = notes.length;
 
         let notesTodayCount = 0;
         let dailyNotesCount = 0;
         let generalNotesCount = 0;
         const notesTodayList = [];
-
-        const jobCounts = {}; // job/context -> count
+        const jobCounts = {};
 
         notes.forEach((n) => {
           const noteType = n.note_type || "general";
@@ -301,10 +365,10 @@ const Dashboard = () => {
           .sort((a, b) => b.count - a.count)
           .slice(0, 4);
 
-        // ---------- CONTACTS STATS ----------
+        /* ---------- CONTACTS & EMAILS STATS ---------- */
+
         const contactsCount = contacts.length;
 
-        // ---------- EMAILS STATS ----------
         let totalEmails = emails.length;
         let emailsToday = 0;
 
@@ -336,7 +400,8 @@ const Dashboard = () => {
           emailsToday,
         });
 
-        // ---------- TOP LISTS ----------
+        /* ---------- TOP LISTS ---------- */
+
         const topTasks = tasks
           .filter((t) => t.status !== "done") // only open tasks
           .map((t) => ({
@@ -351,6 +416,8 @@ const Dashboard = () => {
           .slice(0, 5);
 
         const recentNotes = notes.slice(0, 3);
+
+        /* ---------- Set state ---------- */
 
         setKpis({
           totalTasks,
@@ -394,42 +461,75 @@ const Dashboard = () => {
     fetchData();
   }, []);
 
-  const formatEventTime = (value) => {
-    if (!value) return "No date";
-    try {
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return value;
-      return d.toLocaleString(undefined, {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch (err) {
-      console.error("[Dashboard] Error formatting event time:", err, value);
-      return value;
-    }
-  };
+  /* ---------- Derived chart data ---------- */
 
-  const formatDueDate = (value) => {
-    if (!value) return "No due date";
-    try {
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return value;
-      return d.toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch (err) {
-      console.error("[Dashboard] Error formatting due date:", err, value);
-      return value;
-    }
-  };
+  const completionChartData = useMemo(
+    () => [
+      {
+        name: "Completion",
+        value: Math.max(0, Math.min(100, kpis.completionRate || 0)),
+        fill: "#22c55e",
+      },
+    ],
+    [kpis.completionRate]
+  );
 
-  // Greeting + focus line
+  const statusChartData = useMemo(
+    () => [
+      {
+        name: "Tasks",
+        todo: kpis.todoTasks,
+        in_progress: kpis.inProgressTasks,
+        done: kpis.completedTasks,
+      },
+    ],
+    [kpis.todoTasks, kpis.inProgressTasks, kpis.completedTasks]
+  );
+
+  const todayChartData = useMemo(
+    () => [
+      { name: "Tasks due", value: kpis.tasksToday },
+      { name: "Events", value: kpis.eventsToday },
+      { name: "Overdue", value: kpis.overdueTasks },
+    ],
+    [kpis.tasksToday, kpis.eventsToday, kpis.overdueTasks]
+  );
+
+  const infoChartData = useMemo(
+    () => [
+      { name: "Notes today", value: kpis.notesTodayCount },
+      { name: "Emails today", value: kpis.emailsToday },
+    ],
+    [kpis.notesTodayCount, kpis.emailsToday]
+  );
+
+  const tagUsageData = useMemo(() => {
+    if (!allTasks.length || !allTags.length) return [];
+
+    const counts = {};
+    allTasks.forEach((task) => {
+      const ids = resolveTaskTagIds(task);
+      ids.forEach((id) => {
+        counts[id] = (counts[id] || 0) + 1;
+      });
+    });
+
+    const rows = allTags
+      .map((tag) => ({
+        id: tag.id,
+        name: tag.name,
+        color: tag.color || "#9ca3af",
+        value: counts[tag.id] || 0,
+      }))
+      .filter((row) => row.value > 0)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6); // top 6 tags
+
+    return rows;
+  }, [allTasks, allTags]);
+
+  /* ---------- Greeting / weather ---------- */
+
   const now = clock.now;
   const hour = now.getHours();
   const greeting =
@@ -446,7 +546,6 @@ const Dashboard = () => {
         } due today.`
       : "No deadlines today — great moment for deep work or planning.";
 
-  // Weather helpers
   const renderWeatherLine = () => {
     if (weather.loading) {
       return "Loading weather…";
@@ -458,7 +557,6 @@ const Dashboard = () => {
       return "Weather not configured yet.";
     }
 
-    // Be defensive about shape
     const city = weather.data.city || weather.data.location || "";
     const country = weather.data.country || "";
     const condition =
@@ -492,6 +590,8 @@ const Dashboard = () => {
     return pieces.join(" · ");
   };
 
+  /* ---------- Render ---------- */
+
   return (
     <div className="page page-dashboard">
       <h2 className="page-title">Today at a glance</h2>
@@ -501,40 +601,97 @@ const Dashboard = () => {
 
       {error && <p className="error-text mt-2">{error}</p>}
 
-      {/* KPI row */}
-      <div className="grid-3 mt-2">
-        {/* Tasks KPI */}
+      {/* KPI + Charts row */}
+      <div className="grid-3 mt-3">
+        {/* Tasks + completion ring + stacked status */}
         <section className="card">
-          <h3 className="card-title">Tasks</h3>
-          <div className="flex justify-between items-center mt-2">
+          <div className="flex justify-between items-start gap-3">
             <div>
-              <div className="text-sm muted">Total</div>
-              <div style={{ fontSize: "1.6rem", fontWeight: 700 }}>
-                {kpis.totalTasks}
+              <h3 className="card-title">Tasks</h3>
+              <div className="flex items-baseline gap-2 mt-1">
+                <span className="text-sm muted">Total</span>
+                <span style={{ fontSize: "1.6rem", fontWeight: 700 }}>
+                  {kpis.totalTasks}
+                </span>
               </div>
               <div className="text-xs muted mt-1">
                 Completion: <strong>{kpis.completionRate}%</strong>
               </div>
-            </div>
-            <div>
-              <div className="text-xs muted">
-                Today: <strong>{kpis.tasksToday}</strong>
-              </div>
-              <div className="text-xs muted mt-1">
-                Done: <strong>{kpis.completedTasks}</strong>
-              </div>
               <div className="text-xs muted mt-1">
                 To-do: <strong>{kpis.todoTasks}</strong> · In progress:{" "}
-                <strong>{kpis.inProgressTasks}</strong>
+                <strong>{kpis.inProgressTasks}</strong> · Done:{" "}
+                <strong>{kpis.completedTasks}</strong>
               </div>
-              <div className="text-xs" style={{ color: "#b91c1c" }}>
+              <div className="text-xs" style={{ color: "#b91c1c", marginTop: 4 }}>
                 Overdue: <strong>{kpis.overdueTasks}</strong>
               </div>
+            </div>
+
+            <div style={{ width: 110, height: 110 }}>
+              <ResponsiveContainer>
+                <RadialBarChart
+                  cx="50%"
+                  cy="50%"
+                  innerRadius="70%"
+                  outerRadius="100%"
+                  barSize={10}
+                  data={completionChartData}
+                  startAngle={90}
+                  endAngle={-270}
+                >
+                  <RadialBar
+                    dataKey="value"
+                    cornerRadius={999}
+                    background
+                    clockWise
+                  />
+                  <text
+                    x="50%"
+                    y="50%"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    style={{
+                      fontSize: "0.85rem",
+                      fontWeight: 600,
+                      fill: "#111827",
+                    }}
+                  >
+                    {kpis.completionRate || 0}%
+                  </text>
+                </RadialBarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="mt-3" style={{ height: 150 }}>
+            <ResponsiveContainer>
+              <BarChart data={statusChartData} stackOffset="none" margin={{ top: 4, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="name" hide />
+                <YAxis hide />
+                <Tooltip />
+                <Bar dataKey="todo" stackId="status" fill={STATUS_COLORS.todo} />
+                <Bar
+                  dataKey="in_progress"
+                  stackId="status"
+                  fill={STATUS_COLORS.in_progress}
+                />
+                <Bar dataKey="done" stackId="status" fill={STATUS_COLORS.done} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div
+              className="text-[10px] mt-1"
+              style={{ fontSize: "0.65rem", color: "#6b7280" }}
+            >
+              <span style={{ color: STATUS_COLORS.todo }}>■</span> To-do{"  "}
+              <span style={{ color: STATUS_COLORS.in_progress }}>■</span> In
+              progress{"  "}
+              <span style={{ color: STATUS_COLORS.done }}>■</span> Done
             </div>
           </div>
         </section>
 
-        {/* Today KPI */}
+        {/* Today card with pie / bar */}
         <section className="card">
           <h3 className="card-title">Today</h3>
           <div className="mt-2">
@@ -554,9 +711,38 @@ const Dashboard = () => {
               Make sure you complete your overdue tasks first.
             </div>
           </div>
+
+          <div className="mt-3" style={{ height: 180 }}>
+            <ResponsiveContainer>
+              <PieChart>
+                <Pie
+                  data={todayChartData}
+                  dataKey="value"
+                  nameKey="name"
+                  outerRadius={55}
+                  innerRadius={30}
+                  paddingAngle={1}
+                >
+                  {todayChartData.map((entry, index) => (
+                    <Cell
+                      key={`cell-${index}`}
+                      fill={INFO_COLORS[index % INFO_COLORS.length]}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend
+                  verticalAlign="bottom"
+                  height={36}
+                  iconSize={8}
+                  wrapperStyle={{ fontSize: "0.65rem" }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
         </section>
 
-        {/* Workspace KPI + time + weather */}
+        {/* Workspace card with bars + clock + weather */}
         <section className="card">
           <h3 className="card-title">Workspace</h3>
           <div className="mt-2">
@@ -567,8 +753,7 @@ const Dashboard = () => {
               </span>
             </div>
             <div className="text-sm mt-1">
-              Today&apos;s notes:{" "}
-              <strong>{kpis.notesTodayCount}</strong>
+              Today&apos;s notes: <strong>{kpis.notesTodayCount}</strong>
             </div>
             <div className="text-sm mt-1">
               Contacts: <strong>{kpis.contactsCount}</strong>
@@ -581,7 +766,22 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <div className="mt-3">
+          <div className="mt-3" style={{ height: 150 }}>
+            <ResponsiveContainer>
+              <BarChart
+                data={infoChartData}
+                margin={{ top: 20, left: -20, right: 4, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#4f46e5" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="mt-2">
             <div className="text-xs muted">Right now</div>
             <div className="text-sm">
               {now.toLocaleTimeString([], {
@@ -606,6 +806,41 @@ const Dashboard = () => {
           </div>
         </section>
       </div>
+
+      {/* Tag usage chart */}
+      {tagUsageData.length > 0 && (
+        <div className="mt-4">
+          <section className="card">
+            <h3 className="card-title">Top tags by tasks</h3>
+            <div className="text-xs muted mt-1">
+              How often each tag appears on your tasks (top 6).
+            </div>
+            <div style={{ height: 180, marginTop: 8 }}>
+              <ResponsiveContainer>
+                <BarChart
+                  data={tagUsageData}
+                  layout="vertical"
+                  margin={{ top: 10, left: 40, right: 10, bottom: 10 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" allowDecimals={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    tick={{ fontSize: 11 }}
+                  />
+                  <Tooltip />
+                  <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                    {tagUsageData.map((t, idx) => (
+                      <Cell key={t.id} fill={t.color || INFO_COLORS[idx % INFO_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* Detailed preview lists */}
       <div className="grid-3 mt-4">
@@ -660,9 +895,7 @@ const Dashboard = () => {
             {summary.upcomingEvents.map((e) => (
               <li key={e.id}>
                 <div className="font-medium">{e.title}</div>
-                <div className="muted text-xs">
-                  {formatEventTime(e.start)}
-                </div>
+                <div className="muted text-xs">{formatEventTime(e.start)}</div>
               </li>
             ))}
             {!summary.upcomingEvents.length && (
@@ -748,9 +981,7 @@ const Dashboard = () => {
               {summary.todayEvents.map((e) => (
                 <li key={e.id}>
                   <div className="text-sm">{e.title}</div>
-                  <div className="muted text-xs">
-                    {formatEventTime(e.start)}
-                  </div>
+                  <div className="muted text-xs">{formatEventTime(e.start)}</div>
                 </li>
               ))}
               {!summary.todayEvents.length && (
