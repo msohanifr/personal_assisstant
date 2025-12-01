@@ -1,4 +1,9 @@
+from datetime import timedelta
 import logging
+from django.db.models import Q
+from django.utils import timezone
+import requests
+from django.core.cache import cache
 
 from django.contrib.auth.models import User
 from rest_framework import viewsets, permissions
@@ -82,8 +87,17 @@ class TaskViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
 
     def get_queryset(self):
-        logger.debug("TaskViewSet.get_queryset for user %s", self.request.user)
-        return Task.objects.filter(user=self.request.user).order_by("-created_at")
+        qs = Task.objects.all()
+        cutoff = timezone.now() - timedelta(days=3)
+
+        # Hide done tasks older than 3 days
+        qs = qs.exclude(
+            Q(status=Task.DONE) &
+            Q(completed_at__lt=cutoff)
+        )
+
+        # You can also add user/owner filters etc. here if needed
+        return qs
 
     def perform_create(self, serializer):
         logger.info(
@@ -290,3 +304,164 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
             self.request.user,
         )
         super().perform_destroy(instance)
+
+# core/views_weather.py
+import logging
+import os
+
+import requests
+from django.core.cache import cache
+from django.http import JsonResponse
+from django.utils import timezone
+from django.views.decorators.http import require_GET
+
+logger = logging.getLogger(__name__)
+
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY_YAHOO_WEATHER", "")
+RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST_YAHOO_WEATHER", "yahoo-weather5.p.rapidapi.com")
+
+# Hard limit: do not call external Yahoo Weather more than this per day
+MAX_WEATHER_CALLS_PER_DAY = 2
+WEATHER_CACHE_TTL_SECONDS = 60 * 60 * 12  # 12 hours
+
+
+@require_GET
+def weather_view(request):
+    """
+    Return normalized weather data for the dashboard.
+
+    We:
+      - Try to serve from cache first (per location).
+      - If no cache, check a daily counter. If we've already hit
+        MAX_WEATHER_CALLS_PER_DAY for today, we fall back to the last
+        cached value (if any) or return a quota error.
+      - On successful external call, we update cache + counter.
+
+    Query params:
+      - location: e.g. "New York,US" (optional, default: "New York,US").
+    """
+    if not RAPIDAPI_KEY:
+        logger.warning("[Weather] RAPIDAPI_KEY_YAHOO_WEATHER not set")
+        return JsonResponse(
+            {"detail": "Weather API key not configured."},
+            status=503,
+        )
+
+    location = request.GET.get("location") or "New York,US"
+
+    # --- Cache keys ---
+    location_key = f"weather:last:{location}"
+    global_last_key = "weather:last:any"
+
+    # --- Try location-specific cache first ---
+    cached_data = cache.get(location_key)
+    if cached_data is not None:
+        logger.debug("[Weather] Serving cached result for %s", location)
+        return JsonResponse(cached_data)
+
+    # --- If no location cache, we may still fall back to global cache later ---
+    global_cached = cache.get(global_last_key)
+
+    # --- Enforce per-day call limit ---
+    now = timezone.now()
+    today_str = now.date().isoformat()
+    count_key = f"weather:count:{today_str}"
+
+    current_count = cache.get(count_key, 0)
+    logger.debug(
+        "[Weather] Current daily Yahoo calls: %s (limit=%s)",
+        current_count,
+        MAX_WEATHER_CALLS_PER_DAY,
+    )
+
+    if current_count >= MAX_WEATHER_CALLS_PER_DAY:
+        logger.warning(
+            "[Weather] Daily Yahoo Weather call limit reached (%s). "
+            "Serving cached data if available.",
+            MAX_WEATHER_CALLS_PER_DAY,
+        )
+        if global_cached is not None:
+            logger.debug("[Weather] Returning global cached result after quota reached")
+            return JsonResponse(global_cached)
+        return JsonResponse(
+            {"detail": "Daily weather quota reached. Try again later."},
+            status=429,
+        )
+
+    # --- We are allowed to hit Yahoo Weather API ---
+    url = f"https://{RAPIDAPI_HOST}/weather"
+    params = {
+        "location": location,
+        "format": "json",
+        "u": "c",  # 'c' for Celsius, 'f' for Fahrenheit
+    }
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_HOST,
+    }
+
+    logger.info("[Weather] Requesting Yahoo weather for %s", location)
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=8)
+        if resp.status_code != 200:
+            logger.error(
+                "[Weather] Yahoo API non-200: %s %s",
+                resp.status_code,
+                resp.text[:500],
+            )
+            # If we have any cached data, serve that instead of hard failing
+            if global_cached is not None:
+                logger.debug("[Weather] Returning global cached result after error")
+                return JsonResponse(global_cached)
+            return JsonResponse(
+                {"detail": f"Weather API error: {resp.status_code}"},
+                status=resp.status_code,
+            )
+
+        data = resp.json()
+        logger.debug("[Weather] Raw Yahoo response: %s", data)
+
+        # ---- Normalize shape for your Dashboard.jsx ----
+        location_info = data.get("location", {}) or {}
+        current_obs = data.get("current_observation") or {}
+        current = current_obs.get("condition") or {}
+        atmosphere = current_obs.get("atmosphere") or {}
+
+        temp_c = current.get("temperature")
+
+        normalized = {
+            "city": location_info.get("city") or location,
+            "country": location_info.get("country", ""),
+            "condition": current.get("text", ""),
+            "temperature_c": temp_c,
+            # optional extras
+            "humidity": atmosphere.get("humidity"),
+            "visibility": atmosphere.get("visibility"),
+        }
+
+        # --- Update per-day counter (expires in ~24h) ---
+        new_count = current_count + 1
+        cache.set(count_key, new_count, timeout=60 * 60 * 24)
+        logger.info(
+            "[Weather] External Yahoo call successful. "
+            "Daily count is now %s (limit=%s).",
+            new_count,
+            MAX_WEATHER_CALLS_PER_DAY,
+        )
+
+        # --- Cache the result for this location + global fallback ---
+        cache.set(location_key, normalized, timeout=WEATHER_CACHE_TTL_SECONDS)
+        cache.set(global_last_key, normalized, timeout=60 * 60 * 24)
+
+        return JsonResponse(normalized)
+
+    except requests.RequestException:
+        logger.exception("[Weather] Exception calling Yahoo Weather")
+        # Try to serve global cache if possible
+        if global_cached is not None:
+            logger.debug("[Weather] Returning global cached result after exception")
+            return JsonResponse(global_cached)
+        return JsonResponse(
+            {"detail": "Failed to fetch weather."},
+            status=502,
+        )

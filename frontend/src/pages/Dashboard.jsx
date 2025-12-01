@@ -16,6 +16,8 @@ const Dashboard = () => {
     topJobs: [],
   });
 
+  const [allTags, setAllTags] = useState([]);
+
   const [kpis, setKpis] = useState({
     // Tasks
     totalTasks: 0,
@@ -60,6 +62,27 @@ const Dashboard = () => {
     data: null,
   });
 
+  // ---- Tag helpers (same logic as Tasks.jsx) ----
+  const resolveTaskTagIds = (task) => {
+    if (!task) return [];
+    if (Array.isArray(task.tag_ids)) {
+      return task.tag_ids;
+    }
+    if (Array.isArray(task.tags) && task.tags.length > 0) {
+      if (typeof task.tags[0] === "object") {
+        return task.tags.map((t) => t.id);
+      }
+      return task.tags;
+    }
+    return [];
+  };
+
+  const resolveTaskTags = (task) => {
+    const ids = resolveTaskTagIds(task);
+    if (!ids.length || !allTags.length) return [];
+    return allTags.filter((tag) => ids.includes(tag.id));
+  };
+
   const sameDay = (a, b) => {
     return (
       a.getFullYear() === b.getFullYear() &&
@@ -98,6 +121,7 @@ const Dashboard = () => {
           contactsRes,
           emailsRes,
           weatherRes,
+          tagsRes,
         ] = await Promise.all([
           client.get("/tasks/"),
           client.get("/events/"),
@@ -114,6 +138,10 @@ const Dashboard = () => {
             console.warn("[Dashboard] /weather/ failed, continuing", err);
             return { data: null };
           }),
+          client.get("/task-tags/").catch((err) => {
+            console.warn("[Dashboard] /task-tags/ failed, continuing", err);
+            return { data: [] };
+          }),
         ]);
 
         const tasks = tasksRes.data || [];
@@ -122,6 +150,11 @@ const Dashboard = () => {
         const contacts = contactsRes.data || [];
         const emails = emailsRes.data || [];
         const weatherData = weatherRes.data || null;
+        const tags = tagsRes.data || [];
+
+        setAllTags(tags);
+
+        console.debug("[Dashboard] Raw tags:", tags);
 
         // Update weather state (non-fatal if null)
         setWeather({
@@ -159,9 +192,11 @@ const Dashboard = () => {
           if (t.due_date) {
             const d = new Date(t.due_date);
             if (!Number.isNaN(d.getTime())) {
-              if (sameDay(d, now)) {
+              // Only count tasks due today that are NOT done
+              if (sameDay(d, now) && status !== "done") {
                 tasksToday += 1;
               }
+              // Overdue = past due and NOT done
               if (d < now && status !== "done") {
                 overdueTasksCount += 1;
                 overdueTasksList.push({
@@ -243,8 +278,7 @@ const Dashboard = () => {
           if (noteType === "general") generalNotesCount += 1;
 
           const dateValue =
-            n.date ||
-            (n.created_at ? n.created_at.slice(0, 10) : null);
+            n.date || (n.created_at ? n.created_at.slice(0, 10) : null);
 
           if (dateValue) {
             const nd = new Date(dateValue);
@@ -303,7 +337,8 @@ const Dashboard = () => {
         });
 
         // ---------- TOP LISTS ----------
-        const topTasks = [...tasks]
+        const topTasks = tasks
+          .filter((t) => t.status !== "done") // only open tasks
           .map((t) => ({
             ...t,
             _dueDate: t.due_date ? new Date(t.due_date) : null,
@@ -402,12 +437,14 @@ const Dashboard = () => {
 
   const focusLine =
     kpis.overdueTasks > 0
-      ? `You have ${kpis.overdueTasks} overdue task${kpis.overdueTasks === 1 ? "" : "s"
-      } to clear.`
+      ? `You have ${kpis.overdueTasks} overdue task${
+          kpis.overdueTasks === 1 ? "" : "s"
+        } to clear.`
       : kpis.tasksToday > 0
-        ? `You have ${kpis.tasksToday} task${kpis.tasksToday === 1 ? "" : "s"
+      ? `You have ${kpis.tasksToday} task${
+          kpis.tasksToday === 1 ? "" : "s"
         } due today.`
-        : "No deadlines today — great moment for deep work or planning.";
+      : "No deadlines today — great moment for deep work or planning.";
 
   // Weather helpers
   const renderWeatherLine = () => {
@@ -442,8 +479,8 @@ const Dashboard = () => {
       tempC != null
         ? `${Math.round(tempC)}°C`
         : tempF != null
-          ? `${Math.round(tempF)}°F`
-          : "";
+        ? `${Math.round(tempF)}°F`
+        : "";
 
     const placePart =
       city || country ? `${city}${city && country ? ", " : ""}${country}` : "";
@@ -575,23 +612,42 @@ const Dashboard = () => {
         <section className="card">
           <h3 className="card-title">Top tasks</h3>
           <ul className="list">
-            {summary.topTasks.map((t) => (
-              <li
-                key={t.id}
-                className="flex items-center justify-between gap-2 cursor-pointer"
-                onClick={() => navigate(`/tasks?taskId=${t.id}`)}
-              >
-                <div>
-                  <div className="font-medium">{t.title}</div>
-                  <div className="muted text-xs">
-                    Due: {formatDueDate(t.due_date)}
+            {summary.topTasks.map((t) => {
+              const tagsForTask = resolveTaskTags(t);
+              const primaryTag = tagsForTask[0] || null;
+
+              return (
+                <li
+                  key={t.id}
+                  className="flex items-center justify-between gap-2 cursor-pointer"
+                  onClick={() => navigate(`/tasks?taskId=${t.id}`)}
+                >
+                  <div className="flex items-center gap-2">
+                    {primaryTag && (
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "999px",
+                          backgroundColor: primaryTag.color || "#d4d4d8",
+                          flexShrink: 0,
+                          marginRight: 4,
+                        }}
+                      />
+                    )}
+                    <div>
+                      <div className="font-medium">{t.title}</div>
+                      <div className="muted text-xs">
+                        Due: {formatDueDate(t.due_date)}
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <span className={`badge badge-${t.status}`}>
-                  {t.status.replace("_", " ")}
-                </span>
-              </li>
-            ))}
+                  <span className={`badge badge-${t.status}`}>
+                    {t.status.replace("_", " ")}
+                  </span>
+                </li>
+              );
+            })}
             {!summary.topTasks.length && (
               <li className="muted">No tasks yet. Add one on the Tasks tab.</li>
             )}
@@ -645,20 +701,39 @@ const Dashboard = () => {
           <div className="mt-2">
             <div className="font-medium text-sm">Overdue tasks</div>
             <ul className="list mt-1">
-              {summary.overdueTasks.map((t) => (
-                <li
-                  key={t.id}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <div>
-                    <div className="text-sm">{t.title}</div>
-                    <div className="muted text-xs">
-                      Due: {formatDueDate(t.due_date)}
+              {summary.overdueTasks.map((t) => {
+                const tagsForTask = resolveTaskTags(t);
+                const primaryTag = tagsForTask[0] || null;
+
+                return (
+                  <li
+                    key={t.id}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      {primaryTag && (
+                        <span
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "999px",
+                            backgroundColor: primaryTag.color || "#d4d4d8",
+                            flexShrink: 0,
+                            marginRight: 4,
+                          }}
+                        />
+                      )}
+                      <div>
+                        <div className="text-sm">{t.title}</div>
+                        <div className="muted text-xs">
+                          Due: {formatDueDate(t.due_date)}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <span className="badge badge-todo">Overdue</span>
-                </li>
-              ))}
+                    <span className="badge badge-todo">Overdue</span>
+                  </li>
+                );
+              })}
               {!summary.overdueTasks.length && (
                 <li className="muted text-xs">
                   No overdue tasks — nice job.

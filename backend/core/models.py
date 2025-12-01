@@ -1,3 +1,4 @@
+from time import timezone
 from django.db import models
 from django.contrib.auth import get_user_model
 
@@ -36,10 +37,14 @@ class TaskTag(models.Model):
         return self.name
 
 class Task(models.Model):
+    TODO = "todo"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+
     STATUS_CHOICES = [
-        ("todo", "To Do"),
-        ("in_progress", "In Progress"),
-        ("done", "Done"),
+        (TODO, "To do"),
+        (IN_PROGRESS, "In progress"),
+        (DONE, "Done"),
     ]
     # 🔥 NEW: tags
     tags = models.ManyToManyField(
@@ -54,6 +59,19 @@ class Task(models.Model):
     due_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    # NEW FIELD: when it was actually completed
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def mark_done(self):
+        """Helper to mark as done and set completed_at if needed."""
+        self.status = self.DONE
+        if self.completed_at is None:
+          self.completed_at = timezone.now()
+
+    def clear_done(self):
+        """Helper when moving back from done to todo/in_progress."""
+        self.completed_at = None
 
     def __str__(self):
         return self.title

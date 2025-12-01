@@ -1,3 +1,4 @@
+from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import (
@@ -46,6 +47,34 @@ class TaskSerializer(serializers.ModelSerializer):
         model = Task
         fields = "__all__"
         read_only_fields = ["user", "created_at", "updated_at"]
+
+    def create(self, validated_data):
+        status = validated_data.get("status", Task.TODO)
+        instance = super().create(validated_data)
+        if status == Task.DONE and instance.completed_at is None:
+            instance.completed_at = timezone.now()
+            instance.save(update_fields=["completed_at"])
+        return instance
+
+    def update(self, instance, validated_data):
+        old_status = instance.status
+        new_status = validated_data.get("status", old_status)
+
+        instance = super().update(instance, validated_data)
+
+        # If status changed, adjust completed_at
+        if old_status != new_status:
+            if new_status == Task.DONE:
+                # just became done
+                if instance.completed_at is None:
+                    instance.completed_at = timezone.now()
+            else:
+                # moved out of done
+                instance.completed_at = None
+
+            instance.save(update_fields=["status", "completed_at", "updated_at"])
+
+        return instance
 
 
 class NoteAttachmentSerializer(serializers.ModelSerializer):
