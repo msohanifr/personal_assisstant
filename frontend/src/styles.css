@@ -1591,13 +1591,6 @@ html,
   }
 }
 
-/* ===== FIX TASKS PAGE COLORS ===== */
-
-.page-tasks .badge {
-  background: #f4f4f5 !important;
-  color: #111827 !important;
-}
-
 /* Draft event preview block (when creating a new event) */
 .page-calendar .calendar-event-block-draft {
   background: rgba(59, 130, 246, 0.35); /* soft blue */

@@ -122,7 +122,6 @@ const Tasks = () => {
       const day = pad(d.getDate());
       const hours = pad(d.getHours());
       const minutes = pad(d.getMinutes());
-      // datetime-local expects "YYYY-MM-DDTHH:MM"
       return `${year}-${month}-${day}T${hours}:${minutes}`;
     } catch (err) {
       console.error("[Tasks] Error converting due_date to input format:", err, value);
@@ -159,7 +158,6 @@ const Tasks = () => {
       console.debug("[Tasks] Using provided due_date:", payload.due_date);
     }
 
-    // Ensure tag_ids is always an array
     if (!Array.isArray(payload.tag_ids)) {
       payload.tag_ids = [];
     }
@@ -174,8 +172,7 @@ const Tasks = () => {
         setEditingTaskId(null);
         setRelatedNotes([]);
         setRelatedNotesError("");
-        // Reload to re-apply global sorting
-        loadTasks();
+        loadTasks(); // re-apply sorting and filters
       } else {
         // UPDATE
         console.debug(
@@ -245,7 +242,6 @@ const Tasks = () => {
 
       setTasks((prev) => prev.filter((t) => t.id !== id));
 
-      // If we just deleted the currently edited task, reset the form
       if (editingTaskId === id) {
         resetToNewTask();
       }
@@ -363,7 +359,7 @@ const Tasks = () => {
     e.dataTransfer.effectAllowed = "move";
   };
 
-  const handleDragOver = (e, index) => {
+  const handleDragOver = (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
   };
@@ -499,16 +495,13 @@ const Tasks = () => {
   // ----------------------------
   const resolveTaskTagIds = (task) => {
     if (!task) return [];
-    // If backend sends tag_ids directly
     if (Array.isArray(task.tag_ids)) {
       return task.tag_ids;
     }
-    // If backend sends tags as objects
     if (Array.isArray(task.tags) && task.tags.length > 0) {
       if (typeof task.tags[0] === "object") {
         return task.tags.map((t) => t.id);
       }
-      // If it's an array of IDs
       return task.tags;
     }
     return [];
@@ -566,35 +559,50 @@ const Tasks = () => {
     }
   };
 
-  // ----------------------------
+    // ----------------------------
   // Grouped & filtered tasks
+  //   - active tasks grouped by date
+  //   - done tasks in a single "Completed" group at the bottom
+  //   - backend queryset hides done tasks older than 3 days
   // ----------------------------
   const grouped = useMemo(() => {
     console.debug("[Tasks] Computing grouped tasks for mode:", groupMode);
 
     const q = searchQuery.trim().toLowerCase();
-    const groupsMap = new Map();
+
+    // Open (non-done) tasks by date group
+    const openGroupsMap = new Map();
     const noDateKey = "no_date";
 
-    const filteredTasks = tasks.filter((task) => {
-      if (!q) return true;
+    // Done tasks (last 3 days only, thanks to backend queryset)
+    const doneItems = [];
 
-      const title = (task.title || "").toLowerCase();
-      const description = (task.description || "").toLowerCase();
-      const taskTags = resolveTaskTags(task);
-      const tagText = taskTags.map((t) => t.name.toLowerCase()).join(" ");
+    tasks.forEach((task, index) => {
+      // 1) Search filter
+      if (q) {
+        const title = (task.title || "").toLowerCase();
+        const description = (task.description || "").toLowerCase();
+        const taskTags = resolveTaskTags(task);
+        const tagText = taskTags.map((t) => t.name.toLowerCase()).join(" ");
 
-      return (
-        title.includes(q) ||
-        description.includes(q) ||
-        (tagText && tagText.includes(q))
-      );
-    });
+        const matches =
+          title.includes(q) ||
+          description.includes(q) ||
+          (tagText && tagText.includes(q));
 
-    filteredTasks.forEach((task, idx) => {
+        if (!matches) return;
+      }
+
       const raw = task.due_date;
       const d = raw ? new Date(raw) : null;
 
+      if (task.status === "done") {
+        // collect all done tasks into a single group
+        doneItems.push({ task, index, dateObj: d });
+        return;
+      }
+
+      // Non-done: group by day/week/month
       let key;
       let label;
 
@@ -617,15 +625,17 @@ const Tasks = () => {
         }
       }
 
-      if (!groupsMap.has(key)) {
-        groupsMap.set(key, { key, label, items: [] });
+      if (!openGroupsMap.has(key)) {
+        openGroupsMap.set(key, { key, label, items: [] });
       }
-      groupsMap.get(key).items.push({ task, index: idx, dateObj: d });
+      openGroupsMap.get(key).items.push({ task, index, dateObj: d });
     });
 
-    const groupsArr = Array.from(groupsMap.values());
+    // Turn open (non-done) groups into an array
+    const openGroupsArr = Array.from(openGroupsMap.values());
 
-    groupsArr.sort((a, b) => {
+    // Sort open groups by earliest date; "No due date" last
+    openGroupsArr.sort((a, b) => {
       if (a.key === noDateKey && b.key !== noDateKey) return 1;
       if (b.key === noDateKey && a.key !== noDateKey) return -1;
 
@@ -639,8 +649,19 @@ const Tasks = () => {
       return aFirst.dateObj.getTime() - bFirst.dateObj.getTime();
     });
 
+    const groupsArr = [...openGroupsArr];
+
+    // Add a single "Completed" group at the bottom if there are any done tasks
+    if (doneItems.length > 0) {
+      groupsArr.push({
+        key: "completed",
+        label: "Completed (last 3 days)",
+        items: doneItems,
+      });
+    }
+
     console.debug(
-      "[Tasks] Grouped tasks (after search):",
+      "[Tasks] Grouped tasks (with completed at bottom):",
       groupsArr.map((g) => ({
         label: g.label,
         ids: g.items.map((i) => i.task.id),
@@ -649,7 +670,6 @@ const Tasks = () => {
 
     return groupsArr;
   }, [tasks, groupMode, searchQuery, allTags]);
-
   // ----------------------------
   // Select task for editing
   // ----------------------------
@@ -669,7 +689,7 @@ const Tasks = () => {
     loadRelatedNotes(task.id);
   };
 
-    // ----------------------------
+  // ----------------------------
   // Pre-select task from URL (?taskId=...)
   // ----------------------------
   useEffect(() => {
@@ -1005,7 +1025,7 @@ const Tasks = () => {
                       className="flex items-center justify-between gap-4"
                       draggable
                       onDragStart={(e) => handleDragStart(e, index)}
-                      onDragOver={(e) => handleDragOver(e, index)}
+                      onDragOver={handleDragOver}
                       onDrop={(e) => handleDrop(e, index)}
                       onDragEnd={handleDragEnd}
                       onClick={() => handleSelectTask(t)}
@@ -1076,27 +1096,30 @@ const Tasks = () => {
                             <strong>Due:</strong> {dueLabel}
                           </div>
 
-                          {/* Task tags display */}
                           {taskTags.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {taskTags.map((tag) => (
-                                <span
-                                  key={tag.id}
-                                  className="badge"
-                                  style={{
-                                    borderRadius: 999,
-                                    padding: "1px 8px",
-                                    fontSize: "0.7rem",
-                                    backgroundColor:
-                                      tag.color || "#f3f4f6",
-                                    border: "1px solid #e5e7eb",
-                                  }}
-                                >
-                                  {tag.name}
-                                </span>
-                              ))}
-                            </div>
-                          )}
+  <div className="flex flex-wrap gap-2 mt-1">
+    {taskTags.map((tag) => (
+      <div
+        key={tag.id}
+        className="flex items-center text-xs"
+        style={{ marginRight: 8 }}
+      >
+        <span
+          style={{
+            display: "inline-block",
+            width: 10,
+            height: 10,
+            borderRadius: "999px",
+            backgroundColor: tag.color || "#6b7280",
+            border: "1px solid rgba(15, 23, 42, 0.18)",
+            marginRight: 6, // 👈 this is the separation from the label
+          }}
+        />
+        <span className="muted">{tag.name}</span>
+      </div>
+    ))}
+  </div>
+)}
                         </div>
                       </div>
 
