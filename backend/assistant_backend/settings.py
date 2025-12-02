@@ -97,3 +97,9 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# 60 days (you can make it anything)
+SESSION_COOKIE_AGE = 60 * 24 * 60 * 60  
+
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Do NOT expire on close
+SESSION_SAVE_EVERY_REQUEST = True        # Refresh session on every request
