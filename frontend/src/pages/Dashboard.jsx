@@ -86,6 +86,14 @@ const Dashboard = () => {
     data: null,
   });
 
+  const todayBriefTopTasks = useMemo(() => {
+    return (summary.topTasks || []).slice(0, 3);
+  }, [summary.topTasks]);
+
+  const todayBriefEvents = useMemo(() => {
+    return (summary.todayEvents || []).slice(0, 3);
+  }, [summary.todayEvents]);
+
   /* ---------- Helpers ---------- */
 
   const resolveTaskTagIds = (task) => {
@@ -598,6 +606,65 @@ const Dashboard = () => {
       <p className="muted text-sm">
         {greeting}. {focusLine}
       </p>
+
+      <div className="card" style={{ marginTop: 8, marginBottom: 12 }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-xs muted">
+              {clock.now.toLocaleDateString(undefined, {
+                weekday: "long",
+                month: "short",
+                day: "numeric",
+              })}{" "}
+              · {clock.timezoneLabel}
+            </div>
+            {weather.data && (
+              <div className="text-xs">
+                {weather.data.city}: {weather.data.temperature_c}°C,{" "}
+                {weather.data.condition}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="primary-btn text-xs"
+            onClick={() => navigate("/tasks")}
+          >
+            Plan my day
+          </button>
+        </div>
+        <div className="flex gap-3" style={{ flexWrap: "wrap", marginTop: 10 }}>
+          <div style={{ minWidth: 220 }}>
+            <div className="text-xs font-medium">Top tasks</div>
+            <ul className="list text-xs">
+              {todayBriefTopTasks.length === 0 && <li className="muted">No tasks.</li>}
+              {todayBriefTopTasks.map((t) => (
+                <li key={t.id}>
+                  {t.title} {t.due_date ? `(${formatDueDate(t.due_date)})` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div style={{ minWidth: 220 }}>
+            <div className="text-xs font-medium">Today’s schedule</div>
+            <ul className="list text-xs">
+              {(summary.todayEvents || []).length === 0 && <li className="muted">No events.</li>}
+              {summary.todayEvents?.slice(0, 3).map((ev) => (
+                <li key={ev.id}>
+                  {ev.title} · {formatEventTime(ev.start)}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div style={{ minWidth: 160 }}>
+            <div className="text-xs font-medium">Unread/email load</div>
+            <div className="text-lg font-semibold">
+              {kpis.totalEmails || 0}
+            </div>
+            <div className="muted text-xs">Inbox items loaded</div>
+          </div>
+        </div>
+      </div>
 
       {error && <p className="error-text mt-2">{error}</p>}
 

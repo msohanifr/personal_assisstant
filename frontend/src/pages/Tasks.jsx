@@ -3,6 +3,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { FaGripLines } from "react-icons/fa";
 import client from "../api/client";
+import { createTask, updateTask, deleteTask, flushOfflineQueue } from "../api/offlineClient";
 
 const emptyTask = {
   title: "",
@@ -37,6 +38,87 @@ const Tasks = () => {
   // --- Delete state ---
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Reminders / nudges
+  const [nudgeMessage, setNudgeMessage] = useState("");
+  const [weeklyNudge, setWeeklyNudge] = useState("");
+
+  // Focus mode
+  const [focusTitle, setFocusTitle] = useState("");
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [focusRemaining, setFocusRemaining] = useState(0); // seconds
+  const [focusRunning, setFocusRunning] = useState(false);
+  const [focusTotal, setFocusTotal] = useState(0); // seconds
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    Notification?.permission === "granted"
+  );
+  const [routineStatus, setRoutineStatus] = useState("");
+
+  // Keep focus title aligned when selecting a task
+  useEffect(() => {
+    if (editingTaskId && form.title) {
+      setFocusTitle(form.title);
+    }
+  }, [editingTaskId, form.title]);
+
+  // Focus timer tick
+  useEffect(() => {
+    if (!focusRunning || focusRemaining <= 0) {
+      if (focusRemaining <= 0 && focusRunning) {
+        setFocusRunning(false);
+      }
+      return undefined;
+    }
+    const id = setInterval(() => {
+      setFocusRemaining((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [focusRunning, focusRemaining]);
+
+  const startFocus = () => {
+    const duration = Number(focusMinutes) > 0 ? Number(focusMinutes) : 25;
+    const title = focusTitle.trim() || form.title || "Focus session";
+    setFocusTitle(title);
+    setFocusRemaining(duration * 60);
+    setFocusTotal(duration * 60);
+    setFocusRunning(true);
+  };
+
+  const pauseFocus = () => setFocusRunning(false);
+  const resetFocus = () => {
+    setFocusRunning(false);
+    setFocusRemaining(0);
+    setFocusTotal(0);
+  };
+
+  useEffect(() => {
+    if (!focusRunning && focusRemaining === 0 && notificationsEnabled) {
+      // focus session ended
+      try {
+        new Notification("Focus session ended", {
+          body: focusTitle || "Time's up.",
+        });
+      } catch (err) {
+        console.warn("Notification failed:", err);
+      }
+    }
+  }, [focusRunning, focusRemaining, notificationsEnabled, focusTitle]);
+
+  const focusLabel = () => {
+    const mins = Math.floor(focusRemaining / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = Math.floor(focusRemaining % 60)
+      .toString()
+      .padStart(2, "0");
+    return `${mins}:${secs}`;
+  };
+
+  const focusAngle = () => {
+    if (focusTotal <= 0) return 0;
+    const fraction = Math.max(0, Math.min(1, focusRemaining / focusTotal));
+    return fraction * 360;
+  };
+
   // ----------------------------
   // Load tasks
   // ----------------------------
@@ -63,6 +145,7 @@ const Tasks = () => {
 
       console.debug("[Tasks] Loaded & sorted tasks:", sorted);
       setTasks(sorted);
+      computeNudges(sorted);
     } catch (err) {
       console.error("[Tasks] Error loading tasks:", err);
       setError("Could not load tasks. Check console for details.");
@@ -97,7 +180,95 @@ const Tasks = () => {
   useEffect(() => {
     loadTasks();
     loadTags();
+    flushOfflineQueue();
   }, []);
+
+  const routinePresets = {
+    morning: [
+      { title: "Plan day", description: "Review calendar and top tasks", status: "todo" },
+      { title: "Inbox triage", description: "Process new emails quickly", status: "todo" },
+      { title: "Top 3 tasks", description: "Pick and block time", status: "todo" },
+    ],
+    evening: [
+      { title: "Wrap up", description: "Check off done tasks, move leftovers", status: "todo" },
+      { title: "Tomorrow prep", description: "Outline top tasks for tomorrow", status: "todo" },
+      { title: "Clear desk", description: "Leave workspace ready", status: "todo" },
+    ],
+  };
+
+  const runRoutine = async (name) => {
+    const preset = routinePresets[name];
+    if (!preset) return;
+    setRoutineStatus(`Adding ${name} routine...`);
+    try {
+      for (const task of preset) {
+        await createTask({
+          ...task,
+          due_date: new Date().toISOString(),
+          tag_ids: [],
+        });
+      }
+      setRoutineStatus(`${name} routine added.`);
+      loadTasks();
+    } catch (err) {
+      console.error("[Tasks] Routine failed:", err);
+      setRoutineStatus(`Failed to add ${name} routine.`);
+    }
+  };
+
+  const computeNudges = (items) => {
+    const now = new Date();
+    const soonThreshold = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const weekThreshold = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const overdue = items.filter(
+      (t) =>
+        t.due_date &&
+        new Date(t.due_date) < now &&
+        t.status !== "done"
+    );
+    const soon = items.filter(
+      (t) =>
+        t.due_date &&
+        new Date(t.due_date) >= now &&
+        new Date(t.due_date) <= soonThreshold &&
+        t.status !== "done"
+    );
+    const thisWeek = items.filter(
+      (t) =>
+        t.due_date &&
+        new Date(t.due_date) > soonThreshold &&
+        new Date(t.due_date) <= weekThreshold &&
+        t.status !== "done"
+    );
+
+    if (overdue.length) {
+      setNudgeMessage(`You have ${overdue.length} overdue task(s). Consider tackling the oldest first.`);
+    } else if (soon.length) {
+      setNudgeMessage(`You have ${soon.length} task(s) due in the next 24 hours.`);
+      // Optional notification for due-soon
+      if (notificationsEnabled && Notification.permission === "granted") {
+        try {
+          new Notification("Tasks due soon", {
+            body: `You have ${soon.length} task(s) due in the next 24 hours.`,
+          });
+        } catch (err) {
+          console.warn("Notification failed:", err);
+        }
+      }
+    } else {
+      setNudgeMessage("");
+    }
+
+    const today = now.getDay(); // 0=Sun
+    if (today === 0 && (overdue.length || thisWeek.length)) {
+      setWeeklyNudge(
+        `Weekly review: ${overdue.length} overdue and ${thisWeek.length} due this week. Plan your time.`
+      );
+    } else {
+      setWeeklyNudge("");
+    }
+  };
 
   // ----------------------------
   // General helpers
@@ -166,13 +337,19 @@ const Tasks = () => {
       if (!editingTaskId) {
         // CREATE
         console.debug("[Tasks] Creating task with payload:", payload);
-        const res = await client.post("/tasks/", payload);
-        console.debug("[Tasks] Task created:", res.data);
+        const res = await createTask(payload);
+        if (res.offline) {
+          setError("Offline: task queued and will sync when back online.");
+        } else {
+          console.debug("[Tasks] Task created:", res.data);
+        }
         setForm(emptyTask);
         setEditingTaskId(null);
         setRelatedNotes([]);
         setRelatedNotesError("");
-        loadTasks(); // re-apply sorting and filters
+        if (!res.offline) {
+          loadTasks(); // re-apply sorting and filters
+        }
       } else {
         // UPDATE
         console.debug(
@@ -181,21 +358,26 @@ const Tasks = () => {
           "with payload:",
           payload
         );
-        const res = await client.patch(`/tasks/${editingTaskId}/`, payload);
-        console.debug("[Tasks] Task updated:", res.data);
+        const res = await updateTask(editingTaskId, payload);
+        if (res.offline) {
+          setError("Offline: update queued and will sync when back online.");
+        } else {
+          console.debug("[Tasks] Task updated:", res.data);
+          setTasks((prev) => {
+            const next = prev.map((t) => (t.id === editingTaskId ? res.data : t));
+            computeNudges(next);
+            return next;
+          });
 
-        setTasks((prev) =>
-          prev.map((t) => (t.id === editingTaskId ? res.data : t))
-        );
-
-        const taskTagIds = resolveTaskTagIds(res.data);
-        setForm({
-          title: res.data.title || "",
-          description: res.data.description || "",
-          status: res.data.status || "todo",
-          due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
-          tag_ids: taskTagIds,
-        });
+          const taskTagIds = resolveTaskTagIds(res.data);
+          setForm({
+            title: res.data.title || "",
+            description: res.data.description || "",
+            status: res.data.status || "todo",
+            due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
+            tag_ids: taskTagIds,
+          });
+        }
       }
     } catch (err) {
       console.error("[Tasks] Error saving task:", err);
@@ -238,9 +420,18 @@ const Tasks = () => {
     try {
       setIsDeleting(true);
       console.debug("[Tasks] Deleting task id=%s via DELETE /tasks/%s/", id, id);
-      await client.delete(`/tasks/${id}/`);
+      const res = await deleteTask(id);
 
-      setTasks((prev) => prev.filter((t) => t.id !== id));
+      if (res?.offline) {
+        setError("Offline: delete queued and will sync when back online.");
+        setTasks((prev) => prev.filter((t) => t.id !== id));
+      } else {
+        setTasks((prev) => {
+          const next = prev.filter((t) => t.id !== id);
+          computeNudges(next);
+          return next;
+        });
+      }
 
       if (editingTaskId === id) {
         resetToNewTask();
@@ -324,7 +515,11 @@ const Tasks = () => {
       console.debug("[Tasks] Task status updated:", res.data);
 
       setTasks((prev) =>
-        prev.map((t) => (t.id === task.id ? res.data : t))
+        {
+          const next = prev.map((t) => (t.id === task.id ? res.data : t));
+          computeNudges(next);
+          return next;
+        }
       );
 
       if (editingTaskId === task.id) {
@@ -357,6 +552,10 @@ const Tasks = () => {
     console.debug("[Tasks] Drag start at index:", index);
     setDragIndex(index);
     e.dataTransfer.effectAllowed = "move";
+    const task = tasks[index];
+    if (task?.id) {
+      e.dataTransfer.setData("text/task-id", String(task.id));
+    }
   };
 
   const handleDragOver = (e) => {
@@ -400,6 +599,40 @@ const Tasks = () => {
   const handleDragEnd = () => {
     console.debug("[Tasks] Drag end");
     setDragIndex(null);
+  };
+
+  const findTaskById = (id) => tasks.find((t) => t.id === id);
+
+  const blockTaskTime = async (taskId, mode = "today") => {
+    const task = findTaskById(taskId);
+    if (!task) return;
+
+    let start = new Date();
+    if (mode === "week") {
+      start.setDate(start.getDate() + 1);
+      start.setHours(9, 0, 0, 0);
+    } else {
+      // today: start at next half hour
+      const mins = start.getMinutes();
+      const rounded = mins < 30 ? 30 : 60;
+      start.setMinutes(rounded, 0, 0);
+    }
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+    try {
+      await client.post("/events/", {
+        title: task.title,
+        description: task.description || "",
+        start: start.toISOString(),
+        end: end.toISOString(),
+        location: "",
+        source: "task_block",
+      });
+      setNudgeMessage("Time blocked on calendar.");
+    } catch (err) {
+      console.error("[Tasks] Failed to block time:", err);
+      setError("Failed to create calendar event from task.");
+    }
   };
 
   // ----------------------------
@@ -720,6 +953,150 @@ const Tasks = () => {
   return (
     <div className="page page-tasks">
       <h2 className="page-title">Tasks</h2>
+
+      {nudgeMessage && (
+        <div className="card" style={{ marginBottom: "12px", background: "#fff7ed", borderColor: "#fdba74" }}>
+          <div className="text-sm" style={{ color: "#b45309" }}>
+            {nudgeMessage}
+          </div>
+        </div>
+      )}
+      {weeklyNudge && (
+        <div className="card" style={{ marginBottom: "12px", background: "#eef2ff", borderColor: "#c7d2fe" }}>
+          <div className="text-sm" style={{ color: "#4338ca" }}>
+            {weeklyNudge}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: "12px" }}>
+        <div className="flex items-center justify-between">
+          <h3 className="card-title" style={{ marginBottom: 4 }}>
+            Routines
+          </h3>
+          {routineStatus && <span className="muted text-xs">{routineStatus}</span>}
+        </div>
+        <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={() => runRoutine("morning")}
+          >
+            Add morning routine
+          </button>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={() => runRoutine("evening")}
+          >
+            Add evening routine
+          </button>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: "12px" }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="card-title" style={{ marginBottom: 4 }}>
+              Focus mode
+            </h3>
+            <p className="muted text-xs">
+              Pick a task (or enter a title), choose minutes, and start a focus session.
+            </p>
+          </div>
+          <div
+            className="focus-clock"
+            style={{
+              background: `conic-gradient(#0f172a ${focusAngle()}deg, #e5e7eb ${focusAngle()}deg 360deg)`,
+            }}
+          >
+            <div className="focus-clock-center" />
+            <div className="focus-clock-label">
+              {focusRemaining > 0 ? focusLabel() : "00:00"}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2" style={{ marginTop: 8, flexWrap: "wrap" }}>
+          <input
+            className="field-input"
+            style={{ minWidth: 200 }}
+            placeholder="Focus on..."
+            value={focusTitle}
+            onChange={(e) => setFocusTitle(e.target.value)}
+          />
+          <input
+            className="field-input"
+            style={{ width: 80 }}
+            type="number"
+            min="5"
+            max="120"
+            value={focusMinutes}
+            onChange={(e) => setFocusMinutes(Number(e.target.value))}
+          />
+          <span className="muted text-xs">minutes</span>
+          <div className="flex items-center gap-2">
+            <button type="button" className="primary-btn text-xs" onClick={startFocus}>
+              {focusRunning ? "Restart" : "Start"}
+            </button>
+            <button type="button" className="secondary-btn text-xs" onClick={pauseFocus}>
+              Pause
+            </button>
+            <button type="button" className="secondary-btn text-xs" onClick={resetFocus}>
+              Reset
+            </button>
+            <button
+              type="button"
+              className="secondary-btn text-xs"
+              onClick={async () => {
+                if (!("Notification" in window)) {
+                  alert("Notifications are not supported in this browser.");
+                  return;
+                }
+                if (Notification.permission === "granted") {
+                  setNotificationsEnabled(true);
+                  return;
+                }
+                const perm = await Notification.requestPermission();
+                setNotificationsEnabled(perm === "granted");
+              }}
+            >
+              {notificationsEnabled ? "Notifications on" : "Enable notifications"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: "12px" }}>
+        <div className="text-sm font-medium" style={{ marginBottom: 8 }}>
+          Drag a task onto a block to schedule it
+        </div>
+        <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
+          <div
+            className="secondary-btn text-xs"
+            style={{ padding: "16px", minWidth: 180, textAlign: "center" }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = Number(e.dataTransfer.getData("text/task-id"));
+              if (Number.isFinite(id)) blockTaskTime(id, "today");
+            }}
+          >
+            Block today (next slot)
+          </div>
+          <div
+            className="secondary-btn text-xs"
+            style={{ padding: "16px", minWidth: 180, textAlign: "center" }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = Number(e.dataTransfer.getData("text/task-id"));
+              if (Number.isFinite(id)) blockTaskTime(id, "week");
+            }}
+          >
+            Block this week (tomorrow 9:00)
+          </div>
+        </div>
+      </div>
 
       {/* Full-width form card */}
       <div className="card form-card">

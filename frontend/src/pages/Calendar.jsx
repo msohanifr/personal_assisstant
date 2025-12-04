@@ -11,6 +11,7 @@ import {
   FaTag,
   FaTrash,
   FaUndo,
+  FaExclamationTriangle,
 } from "react-icons/fa";
 import client from "../api/client";
 
@@ -200,6 +201,31 @@ const Calendar = () => {
   const [syncingGoogle, setSyncingGoogle] = useState(false);
   const [syncStatus, setSyncStatus] = useState("");
   const [connectingGoogle, setConnectingGoogle] = useState(false);
+  const [dropHoverDate, setDropHoverDate] = useState(null);
+  const [dropDurationMinutes, setDropDurationMinutes] = useState(60);
+  const [quickAddText, setQuickAddText] = useState("");
+  const [quickAddRecurring, setQuickAddRecurring] = useState(false);
+  const [remindersMap, setRemindersMap] = useState(() => {
+    try {
+      const raw = localStorage.getItem("assistant_event_reminders_v1");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    Notification?.permission === "granted"
+  );
+  const [sourceFilters, setSourceFilters] = useState({
+    manual: true,
+    google: true,
+    email_ai: true,
+    task_block: true,
+    quick_add: true,
+  });
+  const [plannerWarning, setPlannerWarning] = useState("");
+  const [tasks, setTasks] = useState([]);
+  const [plannerOpen, setPlannerOpen] = useState(false);
 
   const [view, setView] = useState("week"); // Fantastical-like default
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
@@ -274,6 +300,88 @@ const Calendar = () => {
     loadEvents();
   }, []);
 
+  const loadTasks = async () => {
+    try {
+      const res = await client.get("/tasks/");
+      setTasks(res.data || []);
+    } catch (err) {
+      console.error("[Calendar] Failed to load tasks:", err);
+    }
+  };
+
+  useEffect(() => {
+    loadTasks();
+  }, []);
+
+  const handleTaskDropOnDate = async (date, dataTransfer) => {
+    const taskIdStr = dataTransfer.getData("text/task-id");
+    const taskId = Number(taskIdStr);
+    if (!Number.isFinite(taskId)) return;
+    const start = new Date(date);
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(start.getTime() + dropDurationMinutes * 60 * 1000);
+
+    // conflict detection
+    const conflict = events.some(
+      (ev) =>
+        (new Date(ev.start) < end && new Date(ev.end) > start)
+    );
+    if (conflict) {
+      setPlannerWarning("Conflict detected with existing event. Adjust slot.");
+      return;
+    }
+    try {
+      const taskRes = await client.get(`/tasks/${taskId}/`);
+      const task = taskRes.data;
+      await client.post("/events/", {
+        title: task.title,
+        description: task.description || "",
+        start: start.toISOString(),
+        end: end.toISOString(),
+        location: "",
+        source: "task_block",
+      });
+      setSyncStatus("Time blocked from task.");
+      loadEvents();
+    } catch (err) {
+      console.error("[Calendar] Failed to create event from task drop:", err);
+      setError("Failed to create event from task drop.");
+    } finally {
+      setDropHoverDate(null);
+    }
+  };
+
+  // Reminder checker (local notifications)
+  useEffect(() => {
+    if (!notificationsEnabled || typeof Notification === "undefined") return undefined;
+    const id = setInterval(() => {
+      const now = Date.now();
+      events.forEach((ev) => {
+        const reminderMin = remindersMap[ev.id];
+        if (!reminderMin) return;
+        const start = new Date(ev.start).getTime();
+        const trigger = start - reminderMin * 60 * 1000;
+        if (trigger <= now && start > now) {
+          try {
+            new Notification("Upcoming event", {
+              body: `${ev.title} at ${new Date(ev.start).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}`,
+            });
+          } catch (err) {
+            console.warn("Notification failed:", err);
+          }
+          const nextMap = { ...remindersMap };
+          delete nextMap[ev.id];
+          setRemindersMap(nextMap);
+          localStorage.setItem("assistant_event_reminders_v1", JSON.stringify(nextMap));
+        }
+      });
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [events, remindersMap, notificationsEnabled]);
+
   const handleSyncGoogle = async () => {
     setSyncStatus("");
     setSyncingGoogle(true);
@@ -307,6 +415,25 @@ const Calendar = () => {
     } finally {
       setConnectingGoogle(false);
     }
+  };
+
+  const handleRequestNotifications = async () => {
+    if (typeof Notification === "undefined") {
+      alert("Notifications are not supported in this browser.");
+      return;
+    }
+    if (Notification.permission === "granted") {
+      setNotificationsEnabled(true);
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    setNotificationsEnabled(perm === "granted");
+  };
+
+  const saveReminderForEvent = (eventId, minutes) => {
+    const next = { ...remindersMap, [eventId]: minutes };
+    setRemindersMap(next);
+    localStorage.setItem("assistant_event_reminders_v1", JSON.stringify(next));
   };
 
     useEffect(() => {
@@ -399,8 +526,15 @@ const handleSubmitEvent = async (e) => {
   try {
     if (editingEventId) {
       await client.put(`/events/${editingEventId}/`, payload);
+      if (remindersMap[editingEventId]) {
+        saveReminderForEvent(editingEventId, remindersMap[editingEventId]);
+      }
     } else {
-      await client.post("/events/", payload);
+      const res = await client.post("/events/", payload);
+      const newId = res.data?.id;
+      if (newId && remindersMap[newId]) {
+        saveReminderForEvent(newId, remindersMap[newId]);
+      }
     }
     resetForm();
     await loadEvents();
@@ -553,6 +687,7 @@ const handleSubmitEvent = async (e) => {
     const dayEnd = endOfDay(date);
 
     return events.filter((ev) => {
+      if (!sourceFilters[ev.source || "manual"]) return false;
       const evStart = ev._startDate;
       const evEnd = ev._endDate;
       if (!evStart || !evEnd) return false;
@@ -564,9 +699,9 @@ const handleSubmitEvent = async (e) => {
     const weekSet = new Set(
       getWeekDays(currentDate).map((d) => startOfDay(d).toISOString())
     );
-    const weekEvents = events.filter((ev) =>
-      weekSet.has(startOfDay(ev._startDate).toISOString())
-    );
+    const weekEvents = events
+      .filter((ev) => sourceFilters[ev.source || "manual"])
+      .filter((ev) => weekSet.has(startOfDay(ev._startDate).toISOString()));
     const grouped = groupEventsByDay(weekEvents);
     return Array.from(grouped.entries())
       .map(([iso, list]) => ({
@@ -735,7 +870,26 @@ const handleSubmitEvent = async (e) => {
             return (
               <div
                 key={date.toISOString()}
-                className="calendar-week-day-column"
+                className={
+                  "calendar-week-day-column " +
+                  (dropHoverDate &&
+                  dropHoverDate.toDateString() === date.toDateString()
+                    ? "calendar-drop-hover"
+                    : "")
+                }
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes("text/task-id")) {
+                    e.preventDefault();
+                    setDropHoverDate(date);
+                  }
+                }}
+                onDragLeave={() => setDropHoverDate(null)}
+                onDrop={(e) => {
+                  if (e.dataTransfer.types.includes("text/task-id")) {
+                    e.preventDefault();
+                    handleTaskDropOnDate(date, e.dataTransfer);
+                  }
+                }}
               >
                 <button
                   type="button"
@@ -839,9 +993,9 @@ const handleSubmitEvent = async (e) => {
   };
 
   const renderDayView = () => {
-    const dayEvents = eventsForDate(selectedDate).sort(
-      (a, b) => a._startDate - b._startDate
-    );
+    const dayEvents = eventsForDate(selectedDate)
+      .filter((ev) => sourceFilters[ev.source || "manual"])
+      .sort((a, b) => a._startDate - b._startDate);
 
     return (
       <div className="calendar-day-view">
@@ -1039,8 +1193,234 @@ const handleSubmitEvent = async (e) => {
 
   const isEditing = !!editingEventId;
 
+  const plannerHours = Array.from({ length: HOURS_END - HOURS_START }, (_, i) => HOURS_START + i);
+
+  const nextEvent = useMemo(() => {
+    const now = Date.now();
+    const upcoming = events
+      .filter((ev) => new Date(ev.start).getTime() > now)
+      .sort((a, b) => new Date(a.start) - new Date(b.start));
+    return upcoming[0] || null;
+  }, [events]);
+
+  const overdueTasks = tasks.filter(
+    (t) => t.due_date && new Date(t.due_date) < new Date() && t.status !== "done"
+  );
+  const soonTasks = tasks.filter((t) => {
+    if (!t.due_date) return false;
+    const d = new Date(t.due_date);
+    const now = new Date();
+    const diff = d.getTime() - now.getTime();
+    return diff > 0 && diff <= 24 * 60 * 60 * 1000 && t.status !== "done";
+  });
+
   return (
     <div className="page page-calendar">
+      <div className="card" style={{ marginBottom: 10 }}>
+        <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+          <input
+            className="field-input"
+            style={{ flex: 1, minWidth: 240 }}
+            placeholder='Quick add (e.g., "Tomorrow 3pm Team sync @ Zoom")'
+            value={quickAddText}
+            onChange={(e) => setQuickAddText(e.target.value)}
+          />
+          <label className="text-xs muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={quickAddRecurring}
+              onChange={(e) => setQuickAddRecurring(e.target.checked)}
+            />
+            Make recurring (note only)
+          </label>
+          <button
+            type="button"
+            className="primary-btn text-xs"
+            onClick={async () => {
+              if (!quickAddText.trim()) return;
+              try {
+                const now = new Date();
+                let start = new Date(now.getTime() + 60 * 60 * 1000);
+                const lower = quickAddText.toLowerCase();
+                if (lower.includes("tomorrow")) {
+                  start.setDate(start.getDate() + 1);
+                  start.setHours(9, 0, 0, 0);
+                }
+                const timeMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
+                if (timeMatch) {
+                  let h = parseInt(timeMatch[1], 10);
+                  const m = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+                  if (timeMatch[3] === "pm" && h !== 12) h += 12;
+                  if (timeMatch[3] === "am" && h === 12) h = 0;
+                  start.setHours(h, m, 0, 0);
+                }
+                const end = new Date(start.getTime() + 60 * 60 * 1000);
+                const title = quickAddText.replace(/tomorrow|today|\d{1,2}(:\d{2})?\s*(am|pm)/gi, "").trim() || "New event";
+                await client.post("/events/", {
+                  title: quickAddRecurring ? `[Recurring] ${title}` : title,
+                  description: quickAddRecurring ? "Recurring (mark manually)" : "",
+                  start: start.toISOString(),
+                  end: end.toISOString(),
+                  location: "",
+                  source: "quick_add",
+                });
+                setQuickAddText("");
+                setQuickAddRecurring(false);
+                loadEvents();
+              } catch (err) {
+                console.error("[Calendar] Quick add failed:", err);
+                setError("Quick add failed.");
+              }
+            }}
+          >
+            Quick add
+          </button>
+        </div>
+        {plannerWarning && (
+          <div className="muted text-xs" style={{ color: "#b91c1c", marginTop: 4 }}>
+            <FaExclamationTriangle /> {plannerWarning}
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ marginBottom: 10 }}>
+        <div
+          className="flex items-center justify-between"
+          style={{ cursor: "pointer" }}
+          onClick={() => setPlannerOpen((o) => !o)}
+        >
+          <h3 className="card-title" style={{ marginBottom: 0 }}>
+            Planner (today)
+          </h3>
+          <div className="text-xs muted">{plannerOpen ? "Hide" : "Show"}</div>
+        </div>
+        {plannerOpen && (
+          <>
+            <div className="flex items-center gap-2 text-xs" style={{ marginTop: 8 }}>
+              {overdueTasks.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-btn text-xs"
+                  onClick={() =>
+                    handleTaskDropOnDate(new Date(), {
+                      getData: () => String(overdueTasks[0].id),
+                      types: ["text/task-id"],
+                    })
+                  }
+                >
+                  Block overdue task
+                </button>
+              )}
+              {soonTasks.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-btn text-xs"
+                  onClick={() =>
+                    handleTaskDropOnDate(new Date(), {
+                      getData: () => String(soonTasks[0].id),
+                      types: ["text/task-id"],
+                    })
+                  }
+                >
+                  Block due-soon task
+                </button>
+              )}
+              {nextEvent && (
+                <>
+                  <button
+                    type="button"
+                    className="secondary-btn text-xs"
+                    onClick={() => {
+                      const start = new Date(nextEvent.start);
+                      const bufferStart = new Date(start.getTime() - 30 * 60 * 1000);
+                      const bufferEnd = start;
+                      client
+                        .post("/events/", {
+                          title: `Prep: ${nextEvent.title}`,
+                          description: "Pre-meeting buffer",
+                          start: bufferStart.toISOString(),
+                          end: bufferEnd.toISOString(),
+                          source: "quick_add",
+                        })
+                        .then(() => loadEvents())
+                        .catch(() => setError("Failed to add buffer"));
+                    }}
+                  >
+                    Add 30m buffer before next event
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn text-xs"
+                    onClick={() => {
+                      const end = new Date(nextEvent.end);
+                      const bufferEnd = new Date(end.getTime() + 30 * 60 * 1000);
+                      client
+                        .post("/events/", {
+                          title: `Follow-up: ${nextEvent.title}`,
+                          description: "Post-meeting notes/follow-ups",
+                          start: end.toISOString(),
+                          end: bufferEnd.toISOString(),
+                          source: "quick_add",
+                        })
+                        .then(() => loadEvents())
+                        .catch(() => setError("Failed to add buffer"));
+                    }}
+                  >
+                    Add 30m buffer after next event
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="planner-timeline" style={{ marginTop: 10 }}>
+              <div className="planner-hours">
+                {plannerHours.map((h) => (
+                  <div key={h} className="muted text-xs">
+                    {String(h).padStart(2, "0")}:00
+                  </div>
+                ))}
+              </div>
+              <div className="planner-track">
+                {plannerHours.map((h) => (
+                  <div
+                    key={h}
+                    className="planner-slot"
+                    style={{ height: 32 }}
+                    onDragOver={(e) => {
+                      if (e.dataTransfer.types.includes("text/task-id")) {
+                        e.preventDefault();
+                      }
+                    }}
+                    onDrop={(e) => {
+                      const slot = new Date();
+                      slot.setHours(h, 0, 0, 0);
+                      handleTaskDropOnDate(slot, e.dataTransfer);
+                    }}
+                  >
+                    {eventsForDate(new Date()).map((ev) => {
+                      const evStart = ev._startDate;
+                      if (evStart.getHours() === h) {
+                        return (
+                          <div
+                            key={ev.id}
+                            className="calendar-marketing-chip"
+                            style={{ marginBottom: 4 }}
+                            title={ev.title}
+                          >
+                            <span className="calendar-event-dot" />
+                            <span className="calendar-event-title">{ev.title}</span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
       {/* Top toolbar */}
       <div className="calendar-toolbar">
         <div className="calendar-nav">
@@ -1091,6 +1471,52 @@ const handleSubmitEvent = async (e) => {
           >
             {syncingGoogle ? "Syncing…" : "Sync Google"}
           </button>
+          <label className="text-xs muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            Drop duration
+            <select
+              className="field-input"
+              style={{ width: 90, padding: "4px 6px" }}
+              value={dropDurationMinutes}
+              onChange={(e) => setDropDurationMinutes(Number(e.target.value))}
+            >
+              <option value={30}>30m</option>
+              <option value={60}>60m</option>
+              <option value={90}>90m</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={handleRequestNotifications}
+          >
+            {notificationsEnabled ? "Reminders on" : "Enable reminders"}
+          </button>
+          <div className="calendar-view-toggle" style={{ marginLeft: 8 }}>
+            {[
+              ["manual", "Manual"],
+              ["google", "Google"],
+              ["email_ai", "AI"],
+              ["task_block", "Task block"],
+              ["quick_add", "Quick add"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={
+                  "toggle-btn" +
+                  (sourceFilters[key] ? " toggle-btn-active" : "")
+                }
+                onClick={() =>
+                  setSourceFilters((prev) => ({
+                    ...prev,
+                    [key]: !prev[key],
+                  }))
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="calendar-view-toggle">
             {VIEWS.map((v) => (
               <button
@@ -1194,6 +1620,30 @@ const handleSubmitEvent = async (e) => {
                   />
                 </label>
               </div>
+              <label className="field-label">
+                Reminder
+                <select
+                  className="field-input"
+                  value={remindersMap[editingEventId || form.id] || 0}
+                  onChange={(e) => {
+                    const mins = Number(e.target.value);
+                    if (editingEventId) {
+                      saveReminderForEvent(editingEventId, mins);
+                    }
+                  }}
+                  disabled={!editingEventId}
+                >
+                  <option value={0}>None</option>
+                  <option value={10}>10 minutes before</option>
+                  <option value={60}>1 hour before</option>
+                  <option value={1440}>1 day before</option>
+                </select>
+                {!notificationsEnabled && (
+                  <div className="muted text-xs">
+                    Enable reminders above to allow notifications.
+                  </div>
+                )}
+              </label>
 
               <label className="field-label">
                 Location / channel
