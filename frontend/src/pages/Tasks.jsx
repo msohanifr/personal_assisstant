@@ -3,6 +3,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { FaGripLines } from "react-icons/fa";
 import client from "../api/client";
+import { createTask, flushOfflineQueue } from "../api/offlineClient";
 
 const emptyTask = {
   title: "",
@@ -39,12 +40,18 @@ const Tasks = () => {
 
   // Reminders / nudges
   const [nudgeMessage, setNudgeMessage] = useState("");
+  const [weeklyNudge, setWeeklyNudge] = useState("");
 
   // Focus mode
   const [focusTitle, setFocusTitle] = useState("");
   const [focusMinutes, setFocusMinutes] = useState(25);
   const [focusRemaining, setFocusRemaining] = useState(0); // seconds
   const [focusRunning, setFocusRunning] = useState(false);
+  const [focusTotal, setFocusTotal] = useState(0); // seconds
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    Notification?.permission === "granted"
+  );
+  const [routineStatus, setRoutineStatus] = useState("");
 
   // Keep focus title aligned when selecting a task
   useEffect(() => {
@@ -72,6 +79,7 @@ const Tasks = () => {
     const title = focusTitle.trim() || form.title || "Focus session";
     setFocusTitle(title);
     setFocusRemaining(duration * 60);
+    setFocusTotal(duration * 60);
     setFocusRunning(true);
   };
 
@@ -79,7 +87,21 @@ const Tasks = () => {
   const resetFocus = () => {
     setFocusRunning(false);
     setFocusRemaining(0);
+    setFocusTotal(0);
   };
+
+  useEffect(() => {
+    if (!focusRunning && focusRemaining === 0 && notificationsEnabled) {
+      // focus session ended
+      try {
+        new Notification("Focus session ended", {
+          body: focusTitle || "Time's up.",
+        });
+      } catch (err) {
+        console.warn("Notification failed:", err);
+      }
+    }
+  }, [focusRunning, focusRemaining, notificationsEnabled, focusTitle]);
 
   const focusLabel = () => {
     const mins = Math.floor(focusRemaining / 60)
@@ -89,6 +111,12 @@ const Tasks = () => {
       .toString()
       .padStart(2, "0");
     return `${mins}:${secs}`;
+  };
+
+  const focusAngle = () => {
+    if (focusTotal <= 0) return 0;
+    const fraction = Math.max(0, Math.min(1, focusRemaining / focusTotal));
+    return fraction * 360;
   };
 
   // ----------------------------
@@ -152,11 +180,46 @@ const Tasks = () => {
   useEffect(() => {
     loadTasks();
     loadTags();
+    flushOfflineQueue();
   }, []);
+
+  const routinePresets = {
+    morning: [
+      { title: "Plan day", description: "Review calendar and top tasks", status: "todo" },
+      { title: "Inbox triage", description: "Process new emails quickly", status: "todo" },
+      { title: "Top 3 tasks", description: "Pick and block time", status: "todo" },
+    ],
+    evening: [
+      { title: "Wrap up", description: "Check off done tasks, move leftovers", status: "todo" },
+      { title: "Tomorrow prep", description: "Outline top tasks for tomorrow", status: "todo" },
+      { title: "Clear desk", description: "Leave workspace ready", status: "todo" },
+    ],
+  };
+
+  const runRoutine = async (name) => {
+    const preset = routinePresets[name];
+    if (!preset) return;
+    setRoutineStatus(`Adding ${name} routine...`);
+    try {
+      for (const task of preset) {
+        await createTask({
+          ...task,
+          due_date: new Date().toISOString(),
+          tag_ids: [],
+        });
+      }
+      setRoutineStatus(`${name} routine added.`);
+      loadTasks();
+    } catch (err) {
+      console.error("[Tasks] Routine failed:", err);
+      setRoutineStatus(`Failed to add ${name} routine.`);
+    }
+  };
 
   const computeNudges = (items) => {
     const now = new Date();
     const soonThreshold = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const weekThreshold = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const overdue = items.filter(
       (t) =>
@@ -171,13 +234,39 @@ const Tasks = () => {
         new Date(t.due_date) <= soonThreshold &&
         t.status !== "done"
     );
+    const thisWeek = items.filter(
+      (t) =>
+        t.due_date &&
+        new Date(t.due_date) > soonThreshold &&
+        new Date(t.due_date) <= weekThreshold &&
+        t.status !== "done"
+    );
 
     if (overdue.length) {
       setNudgeMessage(`You have ${overdue.length} overdue task(s). Consider tackling the oldest first.`);
     } else if (soon.length) {
       setNudgeMessage(`You have ${soon.length} task(s) due in the next 24 hours.`);
+      // Optional notification for due-soon
+      if (notificationsEnabled && Notification.permission === "granted") {
+        try {
+          new Notification("Tasks due soon", {
+            body: `You have ${soon.length} task(s) due in the next 24 hours.`,
+          });
+        } catch (err) {
+          console.warn("Notification failed:", err);
+        }
+      }
     } else {
       setNudgeMessage("");
+    }
+
+    const today = now.getDay(); // 0=Sun
+    if (today === 0 && (overdue.length || thisWeek.length)) {
+      setWeeklyNudge(
+        `Weekly review: ${overdue.length} overdue and ${thisWeek.length} due this week. Plan your time.`
+      );
+    } else {
+      setWeeklyNudge("");
     }
   };
 
@@ -248,13 +337,19 @@ const Tasks = () => {
       if (!editingTaskId) {
         // CREATE
         console.debug("[Tasks] Creating task with payload:", payload);
-        const res = await client.post("/tasks/", payload);
-        console.debug("[Tasks] Task created:", res.data);
+        const res = await createTask(payload);
+        if (res.offline) {
+          setError("Offline: task queued and will sync when back online.");
+        } else {
+          console.debug("[Tasks] Task created:", res.data);
+        }
         setForm(emptyTask);
         setEditingTaskId(null);
         setRelatedNotes([]);
         setRelatedNotesError("");
-        loadTasks(); // re-apply sorting and filters
+        if (!res.offline) {
+          loadTasks(); // re-apply sorting and filters
+        }
       } else {
         // UPDATE
         console.debug(
@@ -822,6 +917,38 @@ const Tasks = () => {
           </div>
         </div>
       )}
+      {weeklyNudge && (
+        <div className="card" style={{ marginBottom: "12px", background: "#eef2ff", borderColor: "#c7d2fe" }}>
+          <div className="text-sm" style={{ color: "#4338ca" }}>
+            {weeklyNudge}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: "12px" }}>
+        <div className="flex items-center justify-between">
+          <h3 className="card-title" style={{ marginBottom: 4 }}>
+            Routines
+          </h3>
+          {routineStatus && <span className="muted text-xs">{routineStatus}</span>}
+        </div>
+        <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={() => runRoutine("morning")}
+          >
+            Add morning routine
+          </button>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={() => runRoutine("evening")}
+          >
+            Add evening routine
+          </button>
+        </div>
+      </div>
 
       <div className="card" style={{ marginBottom: "12px" }}>
         <div className="flex items-center justify-between">
@@ -833,8 +960,16 @@ const Tasks = () => {
               Pick a task (or enter a title), choose minutes, and start a focus session.
             </p>
           </div>
-          <div className="text-sm font-mono">
-            {focusRemaining > 0 ? focusLabel() : "00:00"}
+          <div
+            className="focus-clock"
+            style={{
+              background: `conic-gradient(#0f172a ${focusAngle()}deg, #e5e7eb ${focusAngle()}deg 360deg)`,
+            }}
+          >
+            <div className="focus-clock-center" />
+            <div className="focus-clock-label">
+              {focusRemaining > 0 ? focusLabel() : "00:00"}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2" style={{ marginTop: 8, flexWrap: "wrap" }}>
@@ -864,6 +999,24 @@ const Tasks = () => {
             </button>
             <button type="button" className="secondary-btn text-xs" onClick={resetFocus}>
               Reset
+            </button>
+            <button
+              type="button"
+              className="secondary-btn text-xs"
+              onClick={async () => {
+                if (!("Notification" in window)) {
+                  alert("Notifications are not supported in this browser.");
+                  return;
+                }
+                if (Notification.permission === "granted") {
+                  setNotificationsEnabled(true);
+                  return;
+                }
+                const perm = await Notification.requestPermission();
+                setNotificationsEnabled(perm === "granted");
+              }}
+            >
+              {notificationsEnabled ? "Notifications on" : "Enable notifications"}
             </button>
           </div>
         </div>

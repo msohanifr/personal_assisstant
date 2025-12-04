@@ -947,6 +947,33 @@ html,
   padding: 18px;
 }
 
+.focus-clock {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  position: relative;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 4px rgba(255, 255, 255, 0.8);
+}
+
+.focus-clock-center {
+  width: 8px;
+  height: 8px;
+  background: #0f172a;
+  border-radius: 50%;
+  position: absolute;
+}
+
+.focus-clock-label {
+  position: relative;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
 /* ========== Responsive tweaks ========== */
 @media (max-width: 900px) {
   .app-shell {
