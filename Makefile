@@ -19,6 +19,7 @@ DB_USER := assistant_user
         backend-bash backend-shell backend-makemigrations backend-migrate backend-createsuperuser \
         createsuperuser \
         frontend-bash frontend-install frontend-start frontend-build \
+        backend-test frontend-test frontend-test-run \
         flushdb dropdb resetdb db-up db-down
 
 help:
@@ -51,6 +52,9 @@ help:
 	@echo "  make frontend-install   - Install frontend deps"
 	@echo "  make frontend-start     - Start frontend dev server"
 	@echo "  make frontend-build     - Build frontend"
+	@echo "  make backend-test       - Run backend tests (pytest) inside Docker"
+	@echo "  make frontend-test      - Run Vitest in watch mode"
+	@echo "  make frontend-test-run  - Run Vitest once (CI style)"
 	@echo ""
 
 # --- Project lifecycle ---
@@ -100,6 +104,12 @@ backend-makemigrations:
 backend-migrate:
 	@echo "Running migrate..."
 	$(MANAGE) migrate
+
+backend-test:
+	@echo "Ensuring database service is running..."
+	$(DC) up -d $(DB_SERVICE)
+	@echo "Running backend tests (pytest) inside container (rebuild if needed)..."
+	$(DC) run --rm --build $(BACKEND_SERVICE) sh -c "pytest"
 
 backend-createsuperuser:
 	@echo "Creating Django superuser (interactive)..."
@@ -153,3 +163,11 @@ frontend-start:
 frontend-build:
 	@echo "Building frontend for production..."
 	$(DC) exec $(FRONTEND_SERVICE) npm run build
+
+frontend-test:
+	@echo "Running frontend tests (watch mode)..."
+	$(DC) run --rm --build $(FRONTEND_SERVICE) sh -c "npm install && npm run test"
+
+frontend-test-run:
+	@echo "Running frontend tests (single run)..."
+	$(DC) run --rm --build $(FRONTEND_SERVICE) sh -c "npm install && npm run test:run"

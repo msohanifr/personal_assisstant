@@ -9,6 +9,7 @@ from django.contrib.auth.models import User
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied, NotFound
 
 from .models import (
     Profile,
@@ -46,9 +47,12 @@ class IsOwner(permissions.BasePermission):
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Limit exposure to the authenticated user only.
+        return User.objects.filter(id=self.request.user.id)
 
     @action(detail=False, methods=["get"])
     def me(self, request):
@@ -87,7 +91,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
 
     def get_queryset(self):
-        qs = Task.objects.all()
+        qs = Task.objects.filter(user=self.request.user)
         cutoff = timezone.now() - timedelta(days=3)
 
         # Hide done tasks older than 3 days
@@ -95,8 +99,6 @@ class TaskViewSet(viewsets.ModelViewSet):
             Q(status=Task.DONE) &
             Q(completed_at__lt=cutoff)
         )
-
-        # You can also add user/owner filters etc. here if needed
         return qs
 
     def perform_create(self, serializer):
@@ -212,6 +214,19 @@ class NoteAttachmentViewSet(viewsets.ModelViewSet):
     serializer_class = NoteAttachmentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_object(self):
+        """Ensure users cannot interact with attachments on other users' notes."""
+        try:
+            obj = NoteAttachment.objects.select_related("note").get(
+                pk=self.kwargs.get(self.lookup_field, None)
+            )
+        except NoteAttachment.DoesNotExist:
+            raise NotFound()
+
+        if obj.note.user_id != self.request.user.id:
+            raise PermissionDenied("Cannot access another user's attachment.")
+        return obj
+
     def get_queryset(self):
         logger.debug(
             "NoteAttachmentViewSet.get_queryset for user %s", self.request.user
@@ -228,6 +243,9 @@ class NoteAttachmentViewSet(viewsets.ModelViewSet):
             self.request.user,
             self.request.data.get("note"),
         )
+        note = serializer.validated_data.get("note")
+        if note and note.user != self.request.user:
+            raise PermissionDenied("Cannot attach files to another user's note.")
         serializer.save()
 
     def perform_destroy(self, instance):
@@ -237,6 +255,8 @@ class NoteAttachmentViewSet(viewsets.ModelViewSet):
             instance.id,
             self.request.user,
         )
+        if instance.note.user != self.request.user:
+            raise PermissionDenied("Cannot delete attachments for another user's note.")
         super().perform_destroy(instance)
 
 
