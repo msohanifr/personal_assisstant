@@ -215,6 +215,13 @@ const Calendar = () => {
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     Notification?.permission === "granted"
   );
+  const [sourceFilters, setSourceFilters] = useState({
+    manual: true,
+    google: true,
+    email_ai: true,
+    task_block: true,
+    quick_add: true,
+  });
 
   const [view, setView] = useState("week"); // Fantastical-like default
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
@@ -653,6 +660,7 @@ const handleSubmitEvent = async (e) => {
     const dayEnd = endOfDay(date);
 
     return events.filter((ev) => {
+      if (!sourceFilters[ev.source || "manual"]) return false;
       const evStart = ev._startDate;
       const evEnd = ev._endDate;
       if (!evStart || !evEnd) return false;
@@ -664,9 +672,9 @@ const handleSubmitEvent = async (e) => {
     const weekSet = new Set(
       getWeekDays(currentDate).map((d) => startOfDay(d).toISOString())
     );
-    const weekEvents = events.filter((ev) =>
-      weekSet.has(startOfDay(ev._startDate).toISOString())
-    );
+    const weekEvents = events
+      .filter((ev) => sourceFilters[ev.source || "manual"])
+      .filter((ev) => weekSet.has(startOfDay(ev._startDate).toISOString()));
     const grouped = groupEventsByDay(weekEvents);
     return Array.from(grouped.entries())
       .map(([iso, list]) => ({
@@ -958,9 +966,9 @@ const handleSubmitEvent = async (e) => {
   };
 
   const renderDayView = () => {
-    const dayEvents = eventsForDate(selectedDate).sort(
-      (a, b) => a._startDate - b._startDate
-    );
+    const dayEvents = eventsForDate(selectedDate)
+      .filter((ev) => sourceFilters[ev.source || "manual"])
+      .sort((a, b) => a._startDate - b._startDate);
 
     return (
       <div className="calendar-day-view">
@@ -1292,6 +1300,32 @@ const handleSubmitEvent = async (e) => {
           >
             {notificationsEnabled ? "Reminders on" : "Enable reminders"}
           </button>
+          <div className="calendar-view-toggle" style={{ marginLeft: 8 }}>
+            {[
+              ["manual", "Manual"],
+              ["google", "Google"],
+              ["email_ai", "AI"],
+              ["task_block", "Task block"],
+              ["quick_add", "Quick add"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={
+                  "toggle-btn" +
+                  (sourceFilters[key] ? " toggle-btn-active" : "")
+                }
+                onClick={() =>
+                  setSourceFilters((prev) => ({
+                    ...prev,
+                    [key]: !prev[key],
+                  }))
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="calendar-view-toggle">
             {VIEWS.map((v) => (
               <button
