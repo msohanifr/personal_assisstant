@@ -11,6 +11,7 @@ import {
   FaTag,
   FaTrash,
   FaUndo,
+  FaExclamationTriangle,
 } from "react-icons/fa";
 import client from "../api/client";
 
@@ -222,6 +223,9 @@ const Calendar = () => {
     task_block: true,
     quick_add: true,
   });
+  const [plannerWarning, setPlannerWarning] = useState("");
+  const [tasks, setTasks] = useState([]);
+  const [plannerOpen, setPlannerOpen] = useState(false);
 
   const [view, setView] = useState("week"); // Fantastical-like default
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
@@ -296,6 +300,19 @@ const Calendar = () => {
     loadEvents();
   }, []);
 
+  const loadTasks = async () => {
+    try {
+      const res = await client.get("/tasks/");
+      setTasks(res.data || []);
+    } catch (err) {
+      console.error("[Calendar] Failed to load tasks:", err);
+    }
+  };
+
+  useEffect(() => {
+    loadTasks();
+  }, []);
+
   const handleTaskDropOnDate = async (date, dataTransfer) => {
     const taskIdStr = dataTransfer.getData("text/task-id");
     const taskId = Number(taskIdStr);
@@ -303,6 +320,16 @@ const Calendar = () => {
     const start = new Date(date);
     start.setHours(9, 0, 0, 0);
     const end = new Date(start.getTime() + dropDurationMinutes * 60 * 1000);
+
+    // conflict detection
+    const conflict = events.some(
+      (ev) =>
+        (new Date(ev.start) < end && new Date(ev.end) > start)
+    );
+    if (conflict) {
+      setPlannerWarning("Conflict detected with existing event. Adjust slot.");
+      return;
+    }
     try {
       const taskRes = await client.get(`/tasks/${taskId}/`);
       const task = taskRes.data;
@@ -1166,6 +1193,27 @@ const handleSubmitEvent = async (e) => {
 
   const isEditing = !!editingEventId;
 
+  const plannerHours = Array.from({ length: HOURS_END - HOURS_START }, (_, i) => HOURS_START + i);
+
+  const nextEvent = useMemo(() => {
+    const now = Date.now();
+    const upcoming = events
+      .filter((ev) => new Date(ev.start).getTime() > now)
+      .sort((a, b) => new Date(a.start) - new Date(b.start));
+    return upcoming[0] || null;
+  }, [events]);
+
+  const overdueTasks = tasks.filter(
+    (t) => t.due_date && new Date(t.due_date) < new Date() && t.status !== "done"
+  );
+  const soonTasks = tasks.filter((t) => {
+    if (!t.due_date) return false;
+    const d = new Date(t.due_date);
+    const now = new Date();
+    const diff = d.getTime() - now.getTime();
+    return diff > 0 && diff <= 24 * 60 * 60 * 1000 && t.status !== "done";
+  });
+
   return (
     <div className="page page-calendar">
       <div className="card" style={{ marginBottom: 10 }}>
@@ -1228,6 +1276,149 @@ const handleSubmitEvent = async (e) => {
             Quick add
           </button>
         </div>
+        {plannerWarning && (
+          <div className="muted text-xs" style={{ color: "#b91c1c", marginTop: 4 }}>
+            <FaExclamationTriangle /> {plannerWarning}
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ marginBottom: 10 }}>
+        <div
+          className="flex items-center justify-between"
+          style={{ cursor: "pointer" }}
+          onClick={() => setPlannerOpen((o) => !o)}
+        >
+          <h3 className="card-title" style={{ marginBottom: 0 }}>
+            Planner (today)
+          </h3>
+          <div className="text-xs muted">{plannerOpen ? "Hide" : "Show"}</div>
+        </div>
+        {plannerOpen && (
+          <>
+            <div className="flex items-center gap-2 text-xs" style={{ marginTop: 8 }}>
+              {overdueTasks.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-btn text-xs"
+                  onClick={() =>
+                    handleTaskDropOnDate(new Date(), {
+                      getData: () => String(overdueTasks[0].id),
+                      types: ["text/task-id"],
+                    })
+                  }
+                >
+                  Block overdue task
+                </button>
+              )}
+              {soonTasks.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-btn text-xs"
+                  onClick={() =>
+                    handleTaskDropOnDate(new Date(), {
+                      getData: () => String(soonTasks[0].id),
+                      types: ["text/task-id"],
+                    })
+                  }
+                >
+                  Block due-soon task
+                </button>
+              )}
+              {nextEvent && (
+                <>
+                  <button
+                    type="button"
+                    className="secondary-btn text-xs"
+                    onClick={() => {
+                      const start = new Date(nextEvent.start);
+                      const bufferStart = new Date(start.getTime() - 30 * 60 * 1000);
+                      const bufferEnd = start;
+                      client
+                        .post("/events/", {
+                          title: `Prep: ${nextEvent.title}`,
+                          description: "Pre-meeting buffer",
+                          start: bufferStart.toISOString(),
+                          end: bufferEnd.toISOString(),
+                          source: "quick_add",
+                        })
+                        .then(() => loadEvents())
+                        .catch(() => setError("Failed to add buffer"));
+                    }}
+                  >
+                    Add 30m buffer before next event
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn text-xs"
+                    onClick={() => {
+                      const end = new Date(nextEvent.end);
+                      const bufferEnd = new Date(end.getTime() + 30 * 60 * 1000);
+                      client
+                        .post("/events/", {
+                          title: `Follow-up: ${nextEvent.title}`,
+                          description: "Post-meeting notes/follow-ups",
+                          start: end.toISOString(),
+                          end: bufferEnd.toISOString(),
+                          source: "quick_add",
+                        })
+                        .then(() => loadEvents())
+                        .catch(() => setError("Failed to add buffer"));
+                    }}
+                  >
+                    Add 30m buffer after next event
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="planner-timeline" style={{ marginTop: 10 }}>
+              <div className="planner-hours">
+                {plannerHours.map((h) => (
+                  <div key={h} className="muted text-xs">
+                    {String(h).padStart(2, "0")}:00
+                  </div>
+                ))}
+              </div>
+              <div className="planner-track">
+                {plannerHours.map((h) => (
+                  <div
+                    key={h}
+                    className="planner-slot"
+                    style={{ height: 32 }}
+                    onDragOver={(e) => {
+                      if (e.dataTransfer.types.includes("text/task-id")) {
+                        e.preventDefault();
+                      }
+                    }}
+                    onDrop={(e) => {
+                      const slot = new Date();
+                      slot.setHours(h, 0, 0, 0);
+                      handleTaskDropOnDate(slot, e.dataTransfer);
+                    }}
+                  >
+                    {eventsForDate(new Date()).map((ev) => {
+                      const evStart = ev._startDate;
+                      if (evStart.getHours() === h) {
+                        return (
+                          <div
+                            key={ev.id}
+                            className="calendar-marketing-chip"
+                            style={{ marginBottom: 4 }}
+                            title={ev.title}
+                          >
+                            <span className="calendar-event-dot" />
+                            <span className="calendar-event-title">{ev.title}</span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Top toolbar */}
