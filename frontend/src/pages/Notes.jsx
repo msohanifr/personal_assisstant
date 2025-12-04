@@ -1,6 +1,7 @@
 // frontend/src/pages/Notes.jsx
 import React, { useEffect, useState, useRef } from "react";
 import client from "../api/client";
+import { createNote } from "../api/offlineClient";
 
 const emptyNote = {
   title: "",
@@ -172,15 +173,27 @@ const Notes = () => {
       if (!editingNoteId) {
         // CREATE
         console.debug("[Notes] Creating note with payload:", payload);
-        const res = await client.post("/notes/", payload);
-        console.debug("[Notes] Note created:", res.data);
-        const noteId = res.data.id;
-        if (noteId) {
-          await uploadAttachments(noteId);
+        if (files.length > 0) {
+          const res = await client.post("/notes/", payload);
+          console.debug("[Notes] Note created:", res.data);
+          const noteId = res.data.id;
+          if (noteId) {
+            await uploadAttachments(noteId);
+          }
+          const data = await loadNotes();
+          resetToNewNote();
+          console.debug("[Notes] Notes after create (count=%s)", data.length);
+        } else {
+          const res = await createNote(payload);
+          if (res.offline) {
+            setError("Offline: note queued and will sync when online (attachments not supported offline).");
+            resetToNewNote();
+          } else {
+            const data = await loadNotes();
+            resetToNewNote();
+            console.debug("[Notes] Notes after create (count=%s)", data.length);
+          }
         }
-        const data = await loadNotes();
-        resetToNewNote();
-        console.debug("[Notes] Notes after create (count=%s)", data.length);
       } else {
         // UPDATE
         console.debug(

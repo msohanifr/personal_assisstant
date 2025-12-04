@@ -3,7 +3,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { FaGripLines } from "react-icons/fa";
 import client from "../api/client";
-import { createTask, flushOfflineQueue } from "../api/offlineClient";
+import { createTask, updateTask, deleteTask, flushOfflineQueue } from "../api/offlineClient";
 
 const emptyTask = {
   title: "",
@@ -358,25 +358,26 @@ const Tasks = () => {
           "with payload:",
           payload
         );
-        const res = await client.patch(`/tasks/${editingTaskId}/`, payload);
-        console.debug("[Tasks] Task updated:", res.data);
-
-        setTasks((prev) =>
-          {
+        const res = await updateTask(editingTaskId, payload);
+        if (res.offline) {
+          setError("Offline: update queued and will sync when back online.");
+        } else {
+          console.debug("[Tasks] Task updated:", res.data);
+          setTasks((prev) => {
             const next = prev.map((t) => (t.id === editingTaskId ? res.data : t));
             computeNudges(next);
             return next;
-          }
-        );
+          });
 
-        const taskTagIds = resolveTaskTagIds(res.data);
-        setForm({
-          title: res.data.title || "",
-          description: res.data.description || "",
-          status: res.data.status || "todo",
-          due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
-          tag_ids: taskTagIds,
-        });
+          const taskTagIds = resolveTaskTagIds(res.data);
+          setForm({
+            title: res.data.title || "",
+            description: res.data.description || "",
+            status: res.data.status || "todo",
+            due_date: res.data.due_date ? toInputDateTime(res.data.due_date) : "",
+            tag_ids: taskTagIds,
+          });
+        }
       }
     } catch (err) {
       console.error("[Tasks] Error saving task:", err);
@@ -419,13 +420,18 @@ const Tasks = () => {
     try {
       setIsDeleting(true);
       console.debug("[Tasks] Deleting task id=%s via DELETE /tasks/%s/", id, id);
-      await client.delete(`/tasks/${id}/`);
+      const res = await deleteTask(id);
 
-      setTasks((prev) => {
-        const next = prev.filter((t) => t.id !== id);
-        computeNudges(next);
-        return next;
-      });
+      if (res?.offline) {
+        setError("Offline: delete queued and will sync when back online.");
+        setTasks((prev) => prev.filter((t) => t.id !== id));
+      } else {
+        setTasks((prev) => {
+          const next = prev.filter((t) => t.id !== id);
+          computeNudges(next);
+          return next;
+        });
+      }
 
       if (editingTaskId === id) {
         resetToNewTask();
@@ -546,6 +552,10 @@ const Tasks = () => {
     console.debug("[Tasks] Drag start at index:", index);
     setDragIndex(index);
     e.dataTransfer.effectAllowed = "move";
+    const task = tasks[index];
+    if (task?.id) {
+      e.dataTransfer.setData("text/task-id", String(task.id));
+    }
   };
 
   const handleDragOver = (e) => {
@@ -589,6 +599,40 @@ const Tasks = () => {
   const handleDragEnd = () => {
     console.debug("[Tasks] Drag end");
     setDragIndex(null);
+  };
+
+  const findTaskById = (id) => tasks.find((t) => t.id === id);
+
+  const blockTaskTime = async (taskId, mode = "today") => {
+    const task = findTaskById(taskId);
+    if (!task) return;
+
+    let start = new Date();
+    if (mode === "week") {
+      start.setDate(start.getDate() + 1);
+      start.setHours(9, 0, 0, 0);
+    } else {
+      // today: start at next half hour
+      const mins = start.getMinutes();
+      const rounded = mins < 30 ? 30 : 60;
+      start.setMinutes(rounded, 0, 0);
+    }
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+    try {
+      await client.post("/events/", {
+        title: task.title,
+        description: task.description || "",
+        start: start.toISOString(),
+        end: end.toISOString(),
+        location: "",
+        source: "task_block",
+      });
+      setNudgeMessage("Time blocked on calendar.");
+    } catch (err) {
+      console.error("[Tasks] Failed to block time:", err);
+      setError("Failed to create calendar event from task.");
+    }
   };
 
   // ----------------------------
@@ -1018,6 +1062,38 @@ const Tasks = () => {
             >
               {notificationsEnabled ? "Notifications on" : "Enable notifications"}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: "12px" }}>
+        <div className="text-sm font-medium" style={{ marginBottom: 8 }}>
+          Drag a task onto a block to schedule it
+        </div>
+        <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
+          <div
+            className="secondary-btn text-xs"
+            style={{ padding: "16px", minWidth: 180, textAlign: "center" }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = Number(e.dataTransfer.getData("text/task-id"));
+              if (Number.isFinite(id)) blockTaskTime(id, "today");
+            }}
+          >
+            Block today (next slot)
+          </div>
+          <div
+            className="secondary-btn text-xs"
+            style={{ padding: "16px", minWidth: 180, textAlign: "center" }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = Number(e.dataTransfer.getData("text/task-id"));
+              if (Number.isFinite(id)) blockTaskTime(id, "week");
+            }}
+          >
+            Block this week (tomorrow 9:00)
           </div>
         </div>
       </div>

@@ -42,6 +42,9 @@ const Emails = () => {
   const [aiError, setAiError] = useState("");
   const [aiBulkLoading, setAiBulkLoading] = useState(false);
   const [aiStatus, setAiStatus] = useState("");
+  const [actionableOnly, setActionableOnly] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [snoozedIds, setSnoozedIds] = useState(new Set());
 
   // Master/detail view
   const [viewMode, setViewMode] = useState("list"); // "list" | "detail"
@@ -295,6 +298,8 @@ const Emails = () => {
     const isSameYear = (d) => d.getFullYear() === nowYear;
 
     const result = messages.filter((m) => {
+      if (snoozedIds.has(m.id)) return false;
+
       if (dateMode === "all") return true;
 
       if (!m.sent_at) return false;
@@ -319,8 +324,16 @@ const Emails = () => {
       result.length,
       messages.length
     );
+      return true;
+    }).filter((m) => {
+      if (!actionableOnly) return true;
+      const text = `${m.subject || ""} ${m.body_text || ""} ${m.body_html || ""}`.toLowerCase();
+      const cues = ["please", "can you", "could you", "action", "asap", "due", "follow up", "schedule", "send", "review", "need"];
+      return cues.some((c) => text.includes(c));
+    });
+
     return result;
-  }, [messages, dateMode]);
+  }, [messages, dateMode, actionableOnly, snoozedIds]);
 
   const totalCount = messages.length;
   const filteredCount = filteredMessages.length;
@@ -400,7 +413,7 @@ const Emails = () => {
   };
 
   const handleAnalyzeAll = async () => {
-    const targets = filteredMessages;
+    const targets = filteredMessages.filter((m) => selectedIds.size === 0 || selectedIds.has(m.id));
     if (!targets.length) {
       setAiStatus("No emails to analyze with current filters.");
       return;
@@ -467,15 +480,15 @@ const Emails = () => {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
           {currentAccount && (
             <button
               type="button"
               className="secondary-btn text-xs"
               onClick={() => handleSync(false)}
               disabled={syncing}
-              >
-              {syncing ? "Syncing…" : "Sync now"}
+            >
+            {syncing ? "Syncing…" : "Sync now"}
             </button>
           )}
           {aiStatus && (
@@ -483,6 +496,14 @@ const Emails = () => {
               {aiStatus}
             </span>
           )}
+          <label className="text-xs" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={actionableOnly}
+              onChange={(e) => setActionableOnly(e.target.checked)}
+            />
+            Actionable only
+          </label>
           <button
             type="button"
             className="secondary-btn text-xs"
@@ -646,6 +667,34 @@ const Emails = () => {
                 }
                 onClick={() => handleSelectMessage(m)}
               >
+                <div className="flex items-center gap-2" style={{ marginBottom: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(m.id)}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      setSelectedIds((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(m.id);
+                        else next.delete(m.id);
+                        return next;
+                      });
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="secondary-btn text-xs"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSnoozedIds((prev) => new Set(prev).add(m.id));
+                      }}
+                    >
+                      Snooze (hide)
+                    </button>
+                  </div>
+                </div>
                 <div className="flex justify-between items-center">
                   <div>
                     <div className="font-medium">
