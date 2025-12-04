@@ -40,6 +40,8 @@ const Emails = () => {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState(null);
   const [aiError, setAiError] = useState("");
+  const [aiBulkLoading, setAiBulkLoading] = useState(false);
+  const [aiStatus, setAiStatus] = useState("");
 
   // Master/detail view
   const [viewMode, setViewMode] = useState("list"); // "list" | "detail"
@@ -368,6 +370,11 @@ const Emails = () => {
   // ----------------------------
   const handleAnalyze = async () => {
     if (!selectedMessage) return;
+    const ok = window.confirm(
+      "Run AI on this email to create tasks/notes/events?"
+    );
+    if (!ok) return;
+
     setAiLoading(true);
     setAiError("");
     setAiResult(null);
@@ -385,11 +392,54 @@ const Emails = () => {
     } catch (err) {
       console.error("[Emails] AI analyze error:", err);
       setAiError(
-        "AI analysis failed. Make sure the backend has OpenAI configured (see logs)."
+        "AI analysis failed. Check backend logs for details."
       );
     } finally {
       setAiLoading(false);
     }
+  };
+
+  const handleAnalyzeAll = async () => {
+    const targets = filteredMessages;
+    if (!targets.length) {
+      setAiStatus("No emails to analyze with current filters.");
+      return;
+    }
+    const ok = window.confirm(
+      `Run AI on ${targets.length} email(s) to create tasks/notes/events?`
+    );
+    if (!ok) return;
+
+    setAiBulkLoading(true);
+    setAiStatus("Running AI on emails...");
+    let taskTotal = 0;
+    let noteTotal = 0;
+    let eventTotal = 0;
+
+    for (const msg of targets) {
+      try {
+        const res = await client.post(`/email-messages/${msg.id}/analyze/`);
+        taskTotal += res.data?.created_tasks?.length || 0;
+        noteTotal += res.data?.created_notes?.length || 0;
+        eventTotal += res.data?.created_events?.length || 0;
+      } catch (err) {
+        console.error("[Emails] Bulk AI error:", err);
+        const detail =
+          err.response?.data?.detail ||
+          err.message ||
+          "AI analysis failed during bulk run.";
+        setAiStatus(
+          `Stopped after ${taskTotal} tasks, ${noteTotal} notes, ${eventTotal} events. Error: ${detail}`
+        );
+        setAiBulkLoading(false);
+        return;
+      }
+    }
+
+    setAiStatus(
+      `AI created ${taskTotal} tasks, ${noteTotal} notes, ${eventTotal} events from ${targets.length} emails.`
+    );
+    setAiBulkLoading(false);
   };
 
   // ----------------------------
@@ -404,7 +454,7 @@ const Emails = () => {
           </h2>
           <div className="text-xs muted">
             {currentAccount
-              ? `Auto-pulling every minute · ${folder === "INBOX" ? "Inbox" : "Outbox"}`
+              ? `Auto-pulling every minute · ${folder === "INBOX" ? "Inbox" : "Sent"}`
               : "Add an account to start"}
             {lastSync && (
               <span style={{ marginLeft: 8 }}>
@@ -424,10 +474,23 @@ const Emails = () => {
               className="secondary-btn text-xs"
               onClick={() => handleSync(false)}
               disabled={syncing}
-            >
+              >
               {syncing ? "Syncing…" : "Sync now"}
             </button>
           )}
+          {aiStatus && (
+            <span className="text-xs muted" style={{ marginRight: 8 }}>
+              {aiStatus}
+            </span>
+          )}
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={handleAnalyzeAll}
+            disabled={aiBulkLoading}
+          >
+            {aiBulkLoading ? "AI running…" : "AI: process list"}
+          </button>
           <button
             type="button"
             className="primary-btn text-xs"
@@ -444,7 +507,7 @@ const Emails = () => {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="card-title">
-                {folder === "INBOX" ? "Inbox" : "Outbox"}
+                {folder === "INBOX" ? "Inbox" : "Sent"}
                 {currentAccount && (
                   <span className="text-xs muted" style={{ marginLeft: 8 }}>
                     {filteredCount} of {totalCount} emails · {dateModeLabel}
@@ -499,7 +562,7 @@ const Emails = () => {
                 }
                 onClick={() => handleFolderChange("SENT")}
               >
-                Outbox
+                Sent
               </button>
             </div>
           </div>
@@ -724,8 +787,9 @@ const Emails = () => {
                 <div className="mt-3">
                   <div className="text-xs muted">
                     AI created{" "}
-                    <strong>{aiResult.created_tasks?.length || 0}</strong> tasks and{" "}
-                    <strong>{aiResult.created_notes?.length || 0}</strong> notes from this email.
+                    <strong>{aiResult.created_tasks?.length || 0}</strong> tasks,{" "}
+                    <strong>{aiResult.created_notes?.length || 0}</strong> notes, and{" "}
+                    <strong>{aiResult.created_events?.length || 0}</strong> events from this email.
                   </div>
                   {!!(aiResult.created_tasks || []).length && (
                     <div className="mt-2">
@@ -746,6 +810,30 @@ const Emails = () => {
                         {aiResult.created_notes.map((n) => (
                           <li key={n.id} className="text-xs">
                             • {n.title}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {!!(aiResult.created_events || []).length && (
+                    <div className="mt-2">
+                      <div className="text-xs font-medium">New events</div>
+                      <ul className="list mt-1">
+                        {aiResult.created_events.map((ev) => (
+                          <li key={ev.id} className="text-xs">
+                            • {ev.title}{" "}
+                            {ev.start && (
+                              <span className="muted">
+                                (
+                                {new Date(ev.start).toLocaleString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                                )
+                              </span>
+                            )}
                           </li>
                         ))}
                       </ul>

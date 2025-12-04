@@ -197,6 +197,9 @@ const Calendar = () => {
   const [events, setEvents] = useState([]);
   const [form, setForm] = useState(EMPTY_EVENT);
   const [editingEventId, setEditingEventId] = useState(null);
+  const [syncingGoogle, setSyncingGoogle] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("");
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
 
   const [view, setView] = useState("week"); // Fantastical-like default
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
@@ -270,6 +273,41 @@ const Calendar = () => {
   useEffect(() => {
     loadEvents();
   }, []);
+
+  const handleSyncGoogle = async () => {
+    setSyncStatus("");
+    setSyncingGoogle(true);
+    try {
+      const res = await client.post("/events/sync-google/");
+      const { created = 0, updated = 0 } = res.data || {};
+      setSyncStatus(`Synced: +${created} new, ${updated} updated from Google`);
+      await loadEvents();
+    } catch (err) {
+      console.error("[Calendar] Google sync failed:", err);
+      setError("Google Calendar sync failed. Check backend env and logs.");
+    } finally {
+      setSyncingGoogle(false);
+    }
+  };
+
+  const handleConnectGoogle = async () => {
+    setConnectingGoogle(true);
+    setError("");
+    try {
+      const res = await client.get("/google/oauth/start/");
+      const url = res.data?.auth_url;
+      if (!url) {
+        setError("Failed to start Google OAuth (no url).");
+        return;
+      }
+      window.open(url, "_blank", "width=500,height=700");
+    } catch (err) {
+      console.error("[Calendar] Google connect failed:", err);
+      setError("Failed to start Google OAuth. Check backend config.");
+    } finally {
+      setConnectingGoogle(false);
+    }
+  };
 
     useEffect(() => {
     if (!resizingEventId || !resizingData) return;
@@ -1032,6 +1070,27 @@ const handleSubmitEvent = async (e) => {
         </div>
 
         <div className="calendar-toolbar-right">
+          {syncStatus && (
+            <span className="text-xs muted" style={{ marginRight: 8 }}>
+              {syncStatus}
+            </span>
+          )}
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={handleConnectGoogle}
+            disabled={connectingGoogle}
+          >
+            {connectingGoogle ? "Opening…" : "Connect Google"}
+          </button>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={handleSyncGoogle}
+            disabled={syncingGoogle}
+          >
+            {syncingGoogle ? "Syncing…" : "Sync Google"}
+          </button>
           <div className="calendar-view-toggle">
             {VIEWS.map((v) => (
               <button

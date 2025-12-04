@@ -107,3 +107,12 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Google Calendar sync
+GOOGLE_CALENDAR_SYNC_ENABLED = os.getenv("GOOGLE_CALENDAR_SYNC_ENABLED", "0") == "1"
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+GOOGLE_OAUTH_REDIRECT_URI = os.getenv(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "http://localhost:8001/api/google/oauth/callback/",
+)

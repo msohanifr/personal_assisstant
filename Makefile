@@ -20,7 +20,8 @@ DB_USER := assistant_user
         createsuperuser \
         frontend-bash frontend-install frontend-start frontend-build \
         backend-test frontend-test frontend-test-run \
-        flushdb dropdb resetdb db-up db-down
+        flushdb dropdb resetdb db-up db-down \
+        logs-scheduler
 
 help:
 	@echo ""
@@ -55,6 +56,7 @@ help:
 	@echo "  make backend-test       - Run backend tests (pytest) inside Docker"
 	@echo "  make frontend-test      - Run Vitest in watch mode"
 	@echo "  make frontend-test-run  - Run Vitest once (CI style)"
+	@echo "  make logs-scheduler     - Tail backend logs filtered to scheduler lines"
 	@echo ""
 
 # --- Project lifecycle ---
@@ -86,6 +88,10 @@ logs-frontend:
 
 logs-db:
 	$(DC) logs -f $(DB_SERVICE)
+
+logs-scheduler:
+	@echo "Tailing backend logs for scheduler lines..."
+	$(DC) logs -f $(BACKEND_SERVICE) | grep -i scheduler
 
 # --- Backend helpers (Django) ---
 
