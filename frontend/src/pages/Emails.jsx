@@ -28,18 +28,33 @@ const Emails = () => {
   const [search, setSearch] = useState("");
   const [dateMode, setDateMode] = useState("all"); // "all" | "day" | "month" | "year"
   const [page, setPage] = useState(1); // pagination page (1-based)
+  const [folder, setFolder] = useState("INBOX"); // "INBOX" | "SENT"
 
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
   const [error, setError] = useState("");
 
   // AI agent UI state
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState(null);
   const [aiError, setAiError] = useState("");
+  const [aiBulkLoading, setAiBulkLoading] = useState(false);
+  const [aiStatus, setAiStatus] = useState("");
 
-  // View mode: "list" (Gmail-like) or "detail" (single email)
-  const [viewMode, setViewMode] = useState("list");
+  // Master/detail view
+  const [viewMode, setViewMode] = useState("list"); // "list" | "detail"
+
+  // Compose UI
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeForm, setComposeForm] = useState({
+    to: "",
+    cc: "",
+    bcc: "",
+    subject: "",
+    body: "",
+  });
 
   // ----------------------------
   // Load accounts
@@ -91,12 +106,12 @@ const Emails = () => {
   // Whenever filters that affect the list change, reset to page 1
   useEffect(() => {
     setPage(1);
-  }, [selectedAccountId, search, dateMode]);
+  }, [selectedAccountId, search, dateMode, folder]);
 
   // ----------------------------
   // Load messages when account or search changes
   // ----------------------------
-  const fetchMessages = async (accountId, currentSearch) => {
+  const fetchMessages = async (accountId, currentSearch, currentFolder) => {
     if (!accountId) {
       setMessages([]);
       setSelectedMessage(null);
@@ -106,7 +121,7 @@ const Emails = () => {
     setLoadingMessages(true);
     setError("");
     try {
-      const params = { account: accountId };
+      const params = { account: accountId, folder: currentFolder || folder };
       if (currentSearch.trim()) {
         params.q = currentSearch.trim();
       }
@@ -132,15 +147,16 @@ const Emails = () => {
   };
 
   useEffect(() => {
-    fetchMessages(selectedAccountId, search);
+    fetchMessages(selectedAccountId, search, folder);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAccountId, search]);
+  }, [selectedAccountId, search, folder]);
 
   // ----------------------------
   // Sync handler (manual + auto)
   // ----------------------------
   const handleSync = async (silent = false) => {
     if (!currentAccount) return;
+    setSyncing(true);
     if (!silent) {
       console.debug(
         "[Emails] Manual sync triggered for account id:",
@@ -156,12 +172,15 @@ const Emails = () => {
     try {
       await client.post(`/email-accounts/${currentAccount.id}/sync/`);
       // After sync, reload messages for this account with current search
-      await fetchMessages(currentAccount.id, search);
+      await fetchMessages(currentAccount.id, search, folder);
+      setLastSync(new Date());
     } catch (err) {
       console.error("[Emails] Error calling sync:", err);
       if (!silent) {
         setError("Sync call failed (see console for details).");
       }
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -185,7 +204,7 @@ const Emails = () => {
       clearInterval(intervalId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentAccount?.id, search]);
+  }, [currentAccount?.id, search, folder]);
 
   // ----------------------------
   // Filters + pagination + selection
@@ -201,6 +220,60 @@ const Emails = () => {
     setAiResult(null);
     setAiError("");
     setViewMode("detail");
+  };
+
+  const handleFolderChange = (newFolder) => {
+    setFolder(newFolder);
+    setSelectedMessage(null);
+    setViewMode("list");
+  };
+
+  const handleComposeChange = (e) => {
+    const { name, value } = e.target;
+    setComposeForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleComposeSubmit = (e) => {
+    e.preventDefault();
+    // No backend send endpoint yet; use mailto as a fallback.
+    const params = new URLSearchParams();
+    if (composeForm.subject) params.set("subject", composeForm.subject);
+    if (composeForm.body) params.set("body", composeForm.body);
+    if (composeForm.cc) params.set("cc", composeForm.cc);
+    if (composeForm.bcc) params.set("bcc", composeForm.bcc);
+    const mailto = `mailto:${encodeURIComponent(composeForm.to || "")}?${params.toString()}`;
+    window.open(mailto, "_blank");
+    setComposeOpen(false);
+  };
+
+  const renderEmailBody = (msg) => {
+    if (!msg) return "(no body)";
+    const html = msg.body_html || "";
+    const text = msg.body_text || "";
+
+    const sanitize = (raw) =>
+      raw.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
+
+    if (html.trim()) {
+      return (
+        <div
+          className="email-body-html"
+          dangerouslySetInnerHTML={{ __html: sanitize(html) }}
+        />
+      );
+    }
+
+    // text fallback: preserve line breaks
+    return (
+      <div className="email-body-text">
+        {text.split("\n").map((line, idx) => (
+          // eslint-disable-next-line react/no-array-index-key
+          <p key={idx} style={{ margin: "0 0 8px" }}>
+            {line || "\u00a0"}
+          </p>
+        ))}
+      </div>
+    );
   };
 
   const filteredMessages = useMemo(() => {
@@ -297,6 +370,11 @@ const Emails = () => {
   // ----------------------------
   const handleAnalyze = async () => {
     if (!selectedMessage) return;
+    const ok = window.confirm(
+      "Run AI on this email to create tasks/notes/events?"
+    );
+    if (!ok) return;
+
     setAiLoading(true);
     setAiError("");
     setAiResult(null);
@@ -314,11 +392,54 @@ const Emails = () => {
     } catch (err) {
       console.error("[Emails] AI analyze error:", err);
       setAiError(
-        "AI analysis failed. Make sure the backend has OpenAI configured (see logs)."
+        "AI analysis failed. Check backend logs for details."
       );
     } finally {
       setAiLoading(false);
     }
+  };
+
+  const handleAnalyzeAll = async () => {
+    const targets = filteredMessages;
+    if (!targets.length) {
+      setAiStatus("No emails to analyze with current filters.");
+      return;
+    }
+    const ok = window.confirm(
+      `Run AI on ${targets.length} email(s) to create tasks/notes/events?`
+    );
+    if (!ok) return;
+
+    setAiBulkLoading(true);
+    setAiStatus("Running AI on emails...");
+    let taskTotal = 0;
+    let noteTotal = 0;
+    let eventTotal = 0;
+
+    for (const msg of targets) {
+      try {
+        const res = await client.post(`/email-messages/${msg.id}/analyze/`);
+        taskTotal += res.data?.created_tasks?.length || 0;
+        noteTotal += res.data?.created_notes?.length || 0;
+        eventTotal += res.data?.created_events?.length || 0;
+      } catch (err) {
+        console.error("[Emails] Bulk AI error:", err);
+        const detail =
+          err.response?.data?.detail ||
+          err.message ||
+          "AI analysis failed during bulk run.";
+        setAiStatus(
+          `Stopped after ${taskTotal} tasks, ${noteTotal} notes, ${eventTotal} events. Error: ${detail}`
+        );
+        setAiBulkLoading(false);
+        return;
+      }
+    }
+
+    setAiStatus(
+      `AI created ${taskTotal} tasks, ${noteTotal} notes, ${eventTotal} events from ${targets.length} emails.`
+    );
+    setAiBulkLoading(false);
   };
 
   // ----------------------------
@@ -326,15 +447,67 @@ const Emails = () => {
   // ----------------------------
   return (
     <div className="page page-emails">
-    <h2 className="page-title">Emails</h2>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="page-title" style={{ marginBottom: 4 }}>
+            Emails
+          </h2>
+          <div className="text-xs muted">
+            {currentAccount
+              ? `Auto-pulling every minute · ${folder === "INBOX" ? "Inbox" : "Sent"}`
+              : "Add an account to start"}
+            {lastSync && (
+              <span style={{ marginLeft: 8 }}>
+                · Last sync{" "}
+                {lastSync.toLocaleTimeString(undefined, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {currentAccount && (
+            <button
+              type="button"
+              className="secondary-btn text-xs"
+              onClick={() => handleSync(false)}
+              disabled={syncing}
+              >
+              {syncing ? "Syncing…" : "Sync now"}
+            </button>
+          )}
+          {aiStatus && (
+            <span className="text-xs muted" style={{ marginRight: 8 }}>
+              {aiStatus}
+            </span>
+          )}
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={handleAnalyzeAll}
+            disabled={aiBulkLoading}
+          >
+            {aiBulkLoading ? "AI running…" : "AI: process list"}
+          </button>
+          <button
+            type="button"
+            className="primary-btn text-xs"
+            onClick={() => setComposeOpen(true)}
+          >
+            Compose
+          </button>
+        </div>
+      </div>
 
-      {/* LIST VIEW (Gmail-like) */}
+      {/* LIST VIEW */}
       {viewMode === "list" && (
-        <div className="card email-master-card">
+      <div className="card email-master-card">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="card-title">
-                Inbox
+                {folder === "INBOX" ? "Inbox" : "Sent"}
                 {currentAccount && (
                   <span className="text-xs muted" style={{ marginLeft: 8 }}>
                     {filteredCount} of {totalCount} emails · {dateModeLabel}
@@ -342,15 +515,6 @@ const Emails = () => {
                 )}
               </h3>
             </div>
-            {currentAccount && (
-              <button
-                type="button"
-                className="secondary-btn text-xs"
-                onClick={() => handleSync(false)}
-              >
-                Sync now
-              </button>
-            )}
           </div>
 
           {/* Account filter bar */}
@@ -375,6 +539,31 @@ const Emails = () => {
                   No accounts configured yet
                 </span>
               )}
+            </div>
+          </div>
+
+          {/* Folder toggle */}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs muted">Folder</span>
+            <div className="calendar-view-toggle">
+              <button
+                type="button"
+                className={
+                  "toggle-btn" + (folder === "INBOX" ? " toggle-btn-active" : "")
+                }
+                onClick={() => handleFolderChange("INBOX")}
+              >
+                Inbox
+              </button>
+              <button
+                type="button"
+                className={
+                  "toggle-btn" + (folder === "SENT" ? " toggle-btn-active" : "")
+                }
+                onClick={() => handleFolderChange("SENT")}
+              >
+                Sent
+              </button>
             </div>
           </div>
 
@@ -451,7 +640,10 @@ const Emails = () => {
             {pagedMessages.map((m) => (
               <li
                 key={m.id}
-                className="email-list-item"
+                className={
+                  "email-list-item" +
+                  (selectedMessage?.id === m.id ? " email-list-item-active" : "")
+                }
                 onClick={() => handleSelectMessage(m)}
               >
                 <div className="flex justify-between items-center">
@@ -460,7 +652,9 @@ const Emails = () => {
                       {m.subject || "(no subject)"}
                     </div>
                     <div className="muted text-xs">
-                      {m.from_email || "(unknown sender)"}
+                      {folder === "SENT"
+                        ? m.to_emails || "(no recipient)"
+                        : m.from_email || "(unknown sender)"}
                     </div>
                   </div>
                   <div className="text-xs muted">
@@ -518,12 +712,12 @@ const Emails = () => {
               </div>
             </div>
           )}
-        </div>
+      </div>
       )}
 
-      {/* DETAIL VIEW (full email + back button) */}
+      {/* DETAIL VIEW */}
       {viewMode === "detail" && (
-        <div className="card email-detail-card">
+        <div className="card email-detail-full">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <button
@@ -531,10 +725,10 @@ const Emails = () => {
                 className="secondary-btn text-xs"
                 onClick={() => setViewMode("list")}
               >
-                ← Back to message list
+                ← Back to list
               </button>
               <h3 className="card-title" style={{ marginBottom: 0 }}>
-                Email details
+                Message
               </h3>
             </div>
             {selectedMessage && (
@@ -550,69 +744,52 @@ const Emails = () => {
           </div>
 
           {!selectedMessage ? (
-            <p className="muted text-sm mt-2">
+            <p className="muted text-xs mt-2">
               No email selected. Go back to the list and pick a message.
             </p>
           ) : (
-            <div className="mt-3">
-              <div className="text-sm muted">
-                <div>
-                  <strong>From:</strong> {selectedMessage.from_email}
+            <div className="email-detail-body" style={{ marginTop: 10 }}>
+              <div className="email-detail-header">
+                <div className="muted text-xs">
+                  <strong>{folder === "SENT" ? "To" : "From"}:</strong>{" "}
+                  {folder === "SENT"
+                    ? selectedMessage.to_emails || "(no recipient)"
+                    : selectedMessage.from_email || "(unknown sender)"}
                 </div>
-                <div>
-                  <strong>To:</strong> {selectedMessage.to_emails}
-                </div>
-                {selectedMessage.cc_emails && (
-                  <div>
-                    <strong>CC:</strong> {selectedMessage.cc_emails}
-                  </div>
-                )}
-                <div>
+                <div className="muted text-xs">
                   <strong>Date:</strong>{" "}
                   {selectedMessage.sent_at &&
                     new Date(selectedMessage.sent_at).toLocaleString()}
                 </div>
-                {currentAccount && (
-                  <div>
-                    <strong>Account:</strong> {currentAccount.label} (
-                    {currentAccount.email_address})
+                <div className="muted text-xs">
+                  <strong>Account:</strong>{" "}
+                  {currentAccount
+                    ? `${currentAccount.label} (${currentAccount.email_address})`
+                    : "Unknown"}
+                </div>
+                {selectedMessage.cc_emails && (
+                  <div className="muted text-xs">
+                    <strong>CC:</strong> {selectedMessage.cc_emails}
                   </div>
                 )}
               </div>
 
-              <h4
-                style={{
-                  fontSize: "1.05rem",
-                  fontWeight: 600,
-                  marginTop: 12,
-                  marginBottom: 8,
-                }}
-              >
+              <h4 className="email-detail-subject">
                 {selectedMessage.subject || "(no subject)"}
               </h4>
 
-              <div
-                className="text-sm"
-                style={{
-                  whiteSpace: "pre-wrap",
-                  lineHeight: 1.5,
-                  maxHeight: 420,
-                  overflowY: "auto",
-                }}
-              >
-                {selectedMessage.body_text || "(no body)"}
+              <div className="email-detail-content">
+                {renderEmailBody(selectedMessage)}
               </div>
 
-              {/* AI result area */}
               {aiError && <p className="error-text mt-2">{aiError}</p>}
               {aiResult && (
                 <div className="mt-3">
                   <div className="text-xs muted">
                     AI created{" "}
-                    <strong>{aiResult.created_tasks?.length || 0}</strong>{" "}
-                    tasks and{" "}
-                    <strong>{aiResult.created_notes?.length || 0}</strong>{" "}
-                    notes from this email.
+                    <strong>{aiResult.created_tasks?.length || 0}</strong> tasks,{" "}
+                    <strong>{aiResult.created_notes?.length || 0}</strong> notes, and{" "}
+                    <strong>{aiResult.created_events?.length || 0}</strong> events from this email.
                   </div>
                   {!!(aiResult.created_tasks || []).length && (
                     <div className="mt-2">
@@ -638,6 +815,30 @@ const Emails = () => {
                       </ul>
                     </div>
                   )}
+                  {!!(aiResult.created_events || []).length && (
+                    <div className="mt-2">
+                      <div className="text-xs font-medium">New events</div>
+                      <ul className="list mt-1">
+                        {aiResult.created_events.map((ev) => (
+                          <li key={ev.id} className="text-xs">
+                            • {ev.title}{" "}
+                            {ev.start && (
+                              <span className="muted">
+                                (
+                                {new Date(ev.start).toLocaleString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                                )
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -649,6 +850,96 @@ const Emails = () => {
         Auto-sync runs every minute for the selected account. The AI button
         can turn an email into actionable tasks and notes in your workspace.
       </p>
+
+      {/* Compose modal */}
+      {composeOpen && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="flex items-center justify-between">
+              <h3 className="card-title" style={{ marginBottom: 0 }}>
+                Compose
+              </h3>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setComposeOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleComposeSubmit}>
+              <label className="field-label">
+                To
+                <input
+                  className="field-input"
+                  name="to"
+                  value={composeForm.to}
+                  onChange={handleComposeChange}
+                  required
+                  placeholder="recipient@example.com"
+                />
+              </label>
+              <label className="field-label">
+                CC
+                <input
+                  className="field-input"
+                  name="cc"
+                  value={composeForm.cc}
+                  onChange={handleComposeChange}
+                  placeholder="Optional"
+                />
+              </label>
+              <label className="field-label">
+                BCC
+                <input
+                  className="field-input"
+                  name="bcc"
+                  value={composeForm.bcc}
+                  onChange={handleComposeChange}
+                  placeholder="Optional"
+                />
+              </label>
+              <label className="field-label">
+                Subject
+                <input
+                  className="field-input"
+                  name="subject"
+                  value={composeForm.subject}
+                  onChange={handleComposeChange}
+                  placeholder="What's this about?"
+                />
+              </label>
+              <label className="field-label">
+                Body
+                <textarea
+                  className="field-input"
+                  name="body"
+                  rows={6}
+                  value={composeForm.body}
+                  onChange={handleComposeChange}
+                  placeholder="Write your message…"
+                />
+              </label>
+              <p className="muted text-xs mt-1">
+                Sending uses your default email client (mailto). Hook up a send
+                API to send directly from here.
+              </p>
+              <div className="flex items-center gap-2 mt-3">
+                <button type="submit" className="primary-btn">
+                  Send
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => setComposeOpen(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

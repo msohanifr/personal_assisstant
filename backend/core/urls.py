@@ -10,6 +10,8 @@ from .views import (
     ContactViewSet,
     CalendarEventViewSet,
     TaskTagViewSet,  # 👈 NEW
+    GoogleOAuthStartView,
+    GoogleOAuthCallbackView,
 )
 
 router = DefaultRouter()
@@ -24,4 +26,6 @@ router.register(r"events", CalendarEventViewSet, basename="event")
 
 urlpatterns = [
     path("", include(router.urls)),
+    path("google/oauth/start/", GoogleOAuthStartView.as_view(), name="google-oauth-start"),
+    path("google/oauth/callback/", GoogleOAuthCallbackView.as_view(), name="google-oauth-callback"),
 ]

@@ -1,6 +1,6 @@
-from time import timezone
 from django.db import models
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -105,7 +105,7 @@ class Note(models.Model):
     # Free-form text; can include markdown, code fences, etc.
     content = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.title
@@ -132,7 +132,7 @@ class Contact(models.Model):
     organization = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.name
@@ -147,7 +147,25 @@ class CalendarEvent(models.Model):
     location = models.CharField(max_length=255, blank=True)
     source = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.title
+
+
+class GoogleCredential(models.Model):
+    """Store per-user Google OAuth tokens for Calendar/Gmail."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="google_credential")
+    access_token = models.TextField()
+    refresh_token = models.TextField()
+    token_expiry = models.DateTimeField()
+    token_uri = models.CharField(max_length=255, default="https://oauth2.googleapis.com/token")
+    client_id = models.CharField(max_length=255)
+    client_secret = models.CharField(max_length=255)
+    scopes = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"GoogleCredential(user={self.user_id})"

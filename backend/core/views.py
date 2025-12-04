@@ -4,11 +4,17 @@ from django.db.models import Q
 from django.utils import timezone
 import requests
 from django.core.cache import cache
+from django.core import signing
 
 from django.contrib.auth.models import User
+from django.http import HttpResponse
+from django.conf import settings
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied, NotFound
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
 
 from .models import (
     Profile,
@@ -18,7 +24,9 @@ from .models import (
     NoteAttachment,
     Contact,
     CalendarEvent,
+    GoogleCredential,
 )
+from .google_calendar import sync_google_calendar, SCOPES as GOOGLE_SCOPES
 from .serializers import (
     UserSerializer,
     ProfileSerializer,
@@ -46,9 +54,12 @@ class IsOwner(permissions.BasePermission):
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Limit exposure to the authenticated user only.
+        return User.objects.filter(id=self.request.user.id)
 
     @action(detail=False, methods=["get"])
     def me(self, request):
@@ -87,7 +98,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
 
     def get_queryset(self):
-        qs = Task.objects.all()
+        qs = Task.objects.filter(user=self.request.user)
         cutoff = timezone.now() - timedelta(days=3)
 
         # Hide done tasks older than 3 days
@@ -95,8 +106,6 @@ class TaskViewSet(viewsets.ModelViewSet):
             Q(status=Task.DONE) &
             Q(completed_at__lt=cutoff)
         )
-
-        # You can also add user/owner filters etc. here if needed
         return qs
 
     def perform_create(self, serializer):
@@ -212,6 +221,19 @@ class NoteAttachmentViewSet(viewsets.ModelViewSet):
     serializer_class = NoteAttachmentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_object(self):
+        """Ensure users cannot interact with attachments on other users' notes."""
+        try:
+            obj = NoteAttachment.objects.select_related("note").get(
+                pk=self.kwargs.get(self.lookup_field, None)
+            )
+        except NoteAttachment.DoesNotExist:
+            raise NotFound()
+
+        if obj.note.user_id != self.request.user.id:
+            raise PermissionDenied("Cannot access another user's attachment.")
+        return obj
+
     def get_queryset(self):
         logger.debug(
             "NoteAttachmentViewSet.get_queryset for user %s", self.request.user
@@ -228,6 +250,9 @@ class NoteAttachmentViewSet(viewsets.ModelViewSet):
             self.request.user,
             self.request.data.get("note"),
         )
+        note = serializer.validated_data.get("note")
+        if note and note.user != self.request.user:
+            raise PermissionDenied("Cannot attach files to another user's note.")
         serializer.save()
 
     def perform_destroy(self, instance):
@@ -237,6 +262,8 @@ class NoteAttachmentViewSet(viewsets.ModelViewSet):
             instance.id,
             self.request.user,
         )
+        if instance.note.user != self.request.user:
+            raise PermissionDenied("Cannot delete attachments for another user's note.")
         super().perform_destroy(instance)
 
 
@@ -304,6 +331,152 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
             self.request.user,
         )
         super().perform_destroy(instance)
+
+    @action(detail=False, methods=["post"], url_path="sync-google")
+    def sync_google(self, request):
+        """
+        Pull upcoming events from Google Calendar using service account creds.
+
+        Env required:
+          - GOOGLE_CALENDAR_ID
+          - GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON (or _FILE)
+        """
+        calendar_id = request.data.get("calendar_id") or request.query_params.get(
+            "calendar_id"
+        )
+        max_events = request.data.get("max_events") or request.query_params.get(
+            "max_events", 50
+        )
+        try:
+            max_events = int(max_events)
+        except Exception:
+            max_events = 50
+
+        try:
+            created, updated = sync_google_calendar(
+                request.user, calendar_id=calendar_id, max_events=max_events
+            )
+        except Exception as exc:
+            logger.exception("CalendarEventViewSet.sync_google failed: %s", exc)
+            return Response(
+                {"status": "error", "detail": str(exc)},
+                status=400,
+            )
+
+        return Response(
+            {
+                "status": "ok",
+                "created": created,
+                "updated": updated,
+            }
+        )
+
+
+GOOGLE_OAUTH_CLIENT_ID = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None)
+GOOGLE_OAUTH_CLIENT_SECRET = getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", None)
+GOOGLE_OAUTH_REDIRECT_URI = getattr(
+    settings,
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "http://localhost:8001/api/google/oauth/callback/",
+)
+
+
+def _build_google_flow(scopes):
+    try:
+        from google_auth_oauthlib.flow import Flow
+    except ImportError:
+        raise RuntimeError(
+            "google-auth-oauthlib not installed. Run pip install -r backend/requirements.txt"
+        )
+
+    if not (GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET):
+        raise RuntimeError("Google OAuth client id/secret not configured.")
+
+    config = {
+        "web": {
+            "client_id": GOOGLE_OAUTH_CLIENT_ID,
+            "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
+            "redirect_uris": [GOOGLE_OAUTH_REDIRECT_URI],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+
+    return Flow.from_client_config(
+        config,
+        scopes=scopes,
+        redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
+    )
+
+
+class GoogleOAuthStartView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            flow = _build_google_flow(GOOGLE_SCOPES)
+        except RuntimeError as exc:
+            return Response({"detail": str(exc)}, status=503)
+        # tie state to user securely
+        state = signing.dumps({"u": request.user.id}, salt="google-oauth")
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            state=state,
+            prompt="consent",
+        )
+        return Response({"auth_url": auth_url})
+
+
+class GoogleOAuthCallbackView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # Validate state -> user id
+        state = request.GET.get("state")
+        code = request.GET.get("code")
+        if not state or not code:
+            return Response(
+                {"detail": "Missing state or code."},
+                status=400,
+            )
+
+        try:
+            payload = signing.loads(state, salt="google-oauth", max_age=600)
+            user_id = payload.get("u")
+            user = User.objects.get(id=user_id)
+        except Exception:
+            return Response(
+                {"detail": "Invalid or expired state."},
+                status=400,
+            )
+
+        flow = _build_google_flow(GOOGLE_SCOPES)
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+
+        GoogleCredential.objects.update_or_create(
+            user=user,
+            defaults={
+                "access_token": creds.token,
+                "refresh_token": creds.refresh_token or "",
+                "token_expiry": creds.expiry,
+                "token_uri": creds.token_uri,
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "scopes": " ".join(creds.scopes or []),
+            },
+        )
+
+        html = """
+        <html>
+          <body>
+            <h3>Google account linked</h3>
+            <p>You can close this window and return to the app.</p>
+          </body>
+        </html>
+        """
+        return HttpResponse(html)
 
 # core/views_weather.py
 import logging

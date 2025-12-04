@@ -48,6 +48,22 @@ class TaskSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["user", "created_at", "updated_at"]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request and "tag_ids" in self.fields:
+            self.fields["tag_ids"].queryset = TaskTag.objects.filter(user=request.user)
+
+    def validate_tag_ids(self, tags):
+        """Ensure all tags belong to the authenticated user."""
+        request = self.context.get("request")
+        if not request:
+            return tags
+        for tag in tags:
+            if tag.user_id != request.user.id:
+                raise serializers.ValidationError("Invalid tag selection.")
+        return tags
+
     def create(self, validated_data):
         status = validated_data.get("status", Task.TODO)
         instance = super().create(validated_data)

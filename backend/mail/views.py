@@ -7,8 +7,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from core.views import IsOwner
-from core.serializers import TaskSerializer, NoteSerializer
-from .ai_agent import analyze_email_to_tasks_and_notes
+from core.serializers import TaskSerializer, NoteSerializer, CalendarEventSerializer
+from .ai_agent import analyze_email_to_tasks_notes_events
 from .imap_sync import sync_imap_account
 from .models import EmailAccount, EmailMessage
 from .serializers import EmailAccountSerializer, EmailMessageSerializer
@@ -202,7 +202,7 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
         try:
-            tasks, notes = analyze_email_to_tasks_and_notes(email)
+            tasks, notes, events = analyze_email_to_tasks_notes_events(email)
         except Exception as exc:
             logger.exception(
                 "EmailMessageViewSet.analyze: Analysis failed for email id=%s: %s",
@@ -215,15 +215,17 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
                     "detail": str(exc),
                 },
                 status=400,
-            )
+        )
 
         task_data = TaskSerializer(tasks, many=True).data
         note_data = NoteSerializer(notes, many=True).data
+        event_data = CalendarEventSerializer(events, many=True).data
 
         logger.info(
-            "EmailMessageViewSet.analyze: Created %s tasks, %s notes for email id=%s",
+            "EmailMessageViewSet.analyze: Created %s tasks, %s notes, %s events for email id=%s",
             len(task_data),
             len(note_data),
+            len(event_data),
             email.id,
         )
 
@@ -232,5 +234,6 @@ class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
                 "status": "ok",
                 "created_tasks": task_data,
                 "created_notes": note_data,
+                "created_events": event_data,
             }
         )
