@@ -37,6 +37,60 @@ const Tasks = () => {
   // --- Delete state ---
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Reminders / nudges
+  const [nudgeMessage, setNudgeMessage] = useState("");
+
+  // Focus mode
+  const [focusTitle, setFocusTitle] = useState("");
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [focusRemaining, setFocusRemaining] = useState(0); // seconds
+  const [focusRunning, setFocusRunning] = useState(false);
+
+  // Keep focus title aligned when selecting a task
+  useEffect(() => {
+    if (editingTaskId && form.title) {
+      setFocusTitle(form.title);
+    }
+  }, [editingTaskId, form.title]);
+
+  // Focus timer tick
+  useEffect(() => {
+    if (!focusRunning || focusRemaining <= 0) {
+      if (focusRemaining <= 0 && focusRunning) {
+        setFocusRunning(false);
+      }
+      return undefined;
+    }
+    const id = setInterval(() => {
+      setFocusRemaining((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [focusRunning, focusRemaining]);
+
+  const startFocus = () => {
+    const duration = Number(focusMinutes) > 0 ? Number(focusMinutes) : 25;
+    const title = focusTitle.trim() || form.title || "Focus session";
+    setFocusTitle(title);
+    setFocusRemaining(duration * 60);
+    setFocusRunning(true);
+  };
+
+  const pauseFocus = () => setFocusRunning(false);
+  const resetFocus = () => {
+    setFocusRunning(false);
+    setFocusRemaining(0);
+  };
+
+  const focusLabel = () => {
+    const mins = Math.floor(focusRemaining / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = Math.floor(focusRemaining % 60)
+      .toString()
+      .padStart(2, "0");
+    return `${mins}:${secs}`;
+  };
+
   // ----------------------------
   // Load tasks
   // ----------------------------
@@ -63,6 +117,7 @@ const Tasks = () => {
 
       console.debug("[Tasks] Loaded & sorted tasks:", sorted);
       setTasks(sorted);
+      computeNudges(sorted);
     } catch (err) {
       console.error("[Tasks] Error loading tasks:", err);
       setError("Could not load tasks. Check console for details.");
@@ -98,6 +153,33 @@ const Tasks = () => {
     loadTasks();
     loadTags();
   }, []);
+
+  const computeNudges = (items) => {
+    const now = new Date();
+    const soonThreshold = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+    const overdue = items.filter(
+      (t) =>
+        t.due_date &&
+        new Date(t.due_date) < now &&
+        t.status !== "done"
+    );
+    const soon = items.filter(
+      (t) =>
+        t.due_date &&
+        new Date(t.due_date) >= now &&
+        new Date(t.due_date) <= soonThreshold &&
+        t.status !== "done"
+    );
+
+    if (overdue.length) {
+      setNudgeMessage(`You have ${overdue.length} overdue task(s). Consider tackling the oldest first.`);
+    } else if (soon.length) {
+      setNudgeMessage(`You have ${soon.length} task(s) due in the next 24 hours.`);
+    } else {
+      setNudgeMessage("");
+    }
+  };
 
   // ----------------------------
   // General helpers
@@ -185,7 +267,11 @@ const Tasks = () => {
         console.debug("[Tasks] Task updated:", res.data);
 
         setTasks((prev) =>
-          prev.map((t) => (t.id === editingTaskId ? res.data : t))
+          {
+            const next = prev.map((t) => (t.id === editingTaskId ? res.data : t));
+            computeNudges(next);
+            return next;
+          }
         );
 
         const taskTagIds = resolveTaskTagIds(res.data);
@@ -240,7 +326,11 @@ const Tasks = () => {
       console.debug("[Tasks] Deleting task id=%s via DELETE /tasks/%s/", id, id);
       await client.delete(`/tasks/${id}/`);
 
-      setTasks((prev) => prev.filter((t) => t.id !== id));
+      setTasks((prev) => {
+        const next = prev.filter((t) => t.id !== id);
+        computeNudges(next);
+        return next;
+      });
 
       if (editingTaskId === id) {
         resetToNewTask();
@@ -324,7 +414,11 @@ const Tasks = () => {
       console.debug("[Tasks] Task status updated:", res.data);
 
       setTasks((prev) =>
-        prev.map((t) => (t.id === task.id ? res.data : t))
+        {
+          const next = prev.map((t) => (t.id === task.id ? res.data : t));
+          computeNudges(next);
+          return next;
+        }
       );
 
       if (editingTaskId === task.id) {
@@ -720,6 +814,60 @@ const Tasks = () => {
   return (
     <div className="page page-tasks">
       <h2 className="page-title">Tasks</h2>
+
+      {nudgeMessage && (
+        <div className="card" style={{ marginBottom: "12px", background: "#fff7ed", borderColor: "#fdba74" }}>
+          <div className="text-sm" style={{ color: "#b45309" }}>
+            {nudgeMessage}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: "12px" }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="card-title" style={{ marginBottom: 4 }}>
+              Focus mode
+            </h3>
+            <p className="muted text-xs">
+              Pick a task (or enter a title), choose minutes, and start a focus session.
+            </p>
+          </div>
+          <div className="text-sm font-mono">
+            {focusRemaining > 0 ? focusLabel() : "00:00"}
+          </div>
+        </div>
+        <div className="flex items-center gap-2" style={{ marginTop: 8, flexWrap: "wrap" }}>
+          <input
+            className="field-input"
+            style={{ minWidth: 200 }}
+            placeholder="Focus on..."
+            value={focusTitle}
+            onChange={(e) => setFocusTitle(e.target.value)}
+          />
+          <input
+            className="field-input"
+            style={{ width: 80 }}
+            type="number"
+            min="5"
+            max="120"
+            value={focusMinutes}
+            onChange={(e) => setFocusMinutes(Number(e.target.value))}
+          />
+          <span className="muted text-xs">minutes</span>
+          <div className="flex items-center gap-2">
+            <button type="button" className="primary-btn text-xs" onClick={startFocus}>
+              {focusRunning ? "Restart" : "Start"}
+            </button>
+            <button type="button" className="secondary-btn text-xs" onClick={pauseFocus}>
+              Pause
+            </button>
+            <button type="button" className="secondary-btn text-xs" onClick={resetFocus}>
+              Reset
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Full-width form card */}
       <div className="card form-card">
