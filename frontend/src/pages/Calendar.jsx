@@ -200,6 +200,21 @@ const Calendar = () => {
   const [syncingGoogle, setSyncingGoogle] = useState(false);
   const [syncStatus, setSyncStatus] = useState("");
   const [connectingGoogle, setConnectingGoogle] = useState(false);
+  const [dropHoverDate, setDropHoverDate] = useState(null);
+  const [dropDurationMinutes, setDropDurationMinutes] = useState(60);
+  const [quickAddText, setQuickAddText] = useState("");
+  const [quickAddRecurring, setQuickAddRecurring] = useState(false);
+  const [remindersMap, setRemindersMap] = useState(() => {
+    try {
+      const raw = localStorage.getItem("assistant_event_reminders_v1");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    Notification?.permission === "granted"
+  );
 
   const [view, setView] = useState("week"); // Fantastical-like default
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
@@ -274,6 +289,65 @@ const Calendar = () => {
     loadEvents();
   }, []);
 
+  const handleTaskDropOnDate = async (date, dataTransfer) => {
+    const taskIdStr = dataTransfer.getData("text/task-id");
+    const taskId = Number(taskIdStr);
+    if (!Number.isFinite(taskId)) return;
+    const start = new Date(date);
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(start.getTime() + dropDurationMinutes * 60 * 1000);
+    try {
+      const taskRes = await client.get(`/tasks/${taskId}/`);
+      const task = taskRes.data;
+      await client.post("/events/", {
+        title: task.title,
+        description: task.description || "",
+        start: start.toISOString(),
+        end: end.toISOString(),
+        location: "",
+        source: "task_block",
+      });
+      setSyncStatus("Time blocked from task.");
+      loadEvents();
+    } catch (err) {
+      console.error("[Calendar] Failed to create event from task drop:", err);
+      setError("Failed to create event from task drop.");
+    } finally {
+      setDropHoverDate(null);
+    }
+  };
+
+  // Reminder checker (local notifications)
+  useEffect(() => {
+    if (!notificationsEnabled || typeof Notification === "undefined") return undefined;
+    const id = setInterval(() => {
+      const now = Date.now();
+      events.forEach((ev) => {
+        const reminderMin = remindersMap[ev.id];
+        if (!reminderMin) return;
+        const start = new Date(ev.start).getTime();
+        const trigger = start - reminderMin * 60 * 1000;
+        if (trigger <= now && start > now) {
+          try {
+            new Notification("Upcoming event", {
+              body: `${ev.title} at ${new Date(ev.start).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}`,
+            });
+          } catch (err) {
+            console.warn("Notification failed:", err);
+          }
+          const nextMap = { ...remindersMap };
+          delete nextMap[ev.id];
+          setRemindersMap(nextMap);
+          localStorage.setItem("assistant_event_reminders_v1", JSON.stringify(nextMap));
+        }
+      });
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [events, remindersMap, notificationsEnabled]);
+
   const handleSyncGoogle = async () => {
     setSyncStatus("");
     setSyncingGoogle(true);
@@ -307,6 +381,25 @@ const Calendar = () => {
     } finally {
       setConnectingGoogle(false);
     }
+  };
+
+  const handleRequestNotifications = async () => {
+    if (typeof Notification === "undefined") {
+      alert("Notifications are not supported in this browser.");
+      return;
+    }
+    if (Notification.permission === "granted") {
+      setNotificationsEnabled(true);
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    setNotificationsEnabled(perm === "granted");
+  };
+
+  const saveReminderForEvent = (eventId, minutes) => {
+    const next = { ...remindersMap, [eventId]: minutes };
+    setRemindersMap(next);
+    localStorage.setItem("assistant_event_reminders_v1", JSON.stringify(next));
   };
 
     useEffect(() => {
@@ -399,8 +492,15 @@ const handleSubmitEvent = async (e) => {
   try {
     if (editingEventId) {
       await client.put(`/events/${editingEventId}/`, payload);
+      if (remindersMap[editingEventId]) {
+        saveReminderForEvent(editingEventId, remindersMap[editingEventId]);
+      }
     } else {
-      await client.post("/events/", payload);
+      const res = await client.post("/events/", payload);
+      const newId = res.data?.id;
+      if (newId && remindersMap[newId]) {
+        saveReminderForEvent(newId, remindersMap[newId]);
+      }
     }
     resetForm();
     await loadEvents();
@@ -735,7 +835,26 @@ const handleSubmitEvent = async (e) => {
             return (
               <div
                 key={date.toISOString()}
-                className="calendar-week-day-column"
+                className={
+                  "calendar-week-day-column " +
+                  (dropHoverDate &&
+                  dropHoverDate.toDateString() === date.toDateString()
+                    ? "calendar-drop-hover"
+                    : "")
+                }
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes("text/task-id")) {
+                    e.preventDefault();
+                    setDropHoverDate(date);
+                  }
+                }}
+                onDragLeave={() => setDropHoverDate(null)}
+                onDrop={(e) => {
+                  if (e.dataTransfer.types.includes("text/task-id")) {
+                    e.preventDefault();
+                    handleTaskDropOnDate(date, e.dataTransfer);
+                  }
+                }}
               >
                 <button
                   type="button"
@@ -1041,6 +1160,68 @@ const handleSubmitEvent = async (e) => {
 
   return (
     <div className="page page-calendar">
+      <div className="card" style={{ marginBottom: 10 }}>
+        <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+          <input
+            className="field-input"
+            style={{ flex: 1, minWidth: 240 }}
+            placeholder='Quick add (e.g., "Tomorrow 3pm Team sync @ Zoom")'
+            value={quickAddText}
+            onChange={(e) => setQuickAddText(e.target.value)}
+          />
+          <label className="text-xs muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={quickAddRecurring}
+              onChange={(e) => setQuickAddRecurring(e.target.checked)}
+            />
+            Make recurring (note only)
+          </label>
+          <button
+            type="button"
+            className="primary-btn text-xs"
+            onClick={async () => {
+              if (!quickAddText.trim()) return;
+              try {
+                const now = new Date();
+                let start = new Date(now.getTime() + 60 * 60 * 1000);
+                const lower = quickAddText.toLowerCase();
+                if (lower.includes("tomorrow")) {
+                  start.setDate(start.getDate() + 1);
+                  start.setHours(9, 0, 0, 0);
+                }
+                const timeMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
+                if (timeMatch) {
+                  let h = parseInt(timeMatch[1], 10);
+                  const m = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+                  if (timeMatch[3] === "pm" && h !== 12) h += 12;
+                  if (timeMatch[3] === "am" && h === 12) h = 0;
+                  start.setHours(h, m, 0, 0);
+                }
+                const end = new Date(start.getTime() + 60 * 60 * 1000);
+                const title = quickAddText.replace(/tomorrow|today|\d{1,2}(:\d{2})?\s*(am|pm)/gi, "").trim() || "New event";
+                await client.post("/events/", {
+                  title: quickAddRecurring ? `[Recurring] ${title}` : title,
+                  description: quickAddRecurring ? "Recurring (mark manually)" : "",
+                  start: start.toISOString(),
+                  end: end.toISOString(),
+                  location: "",
+                  source: "quick_add",
+                });
+                setQuickAddText("");
+                setQuickAddRecurring(false);
+                loadEvents();
+              } catch (err) {
+                console.error("[Calendar] Quick add failed:", err);
+                setError("Quick add failed.");
+              }
+            }}
+          >
+            Quick add
+          </button>
+        </div>
+      </div>
+
       {/* Top toolbar */}
       <div className="calendar-toolbar">
         <div className="calendar-nav">
@@ -1090,6 +1271,26 @@ const handleSubmitEvent = async (e) => {
             disabled={syncingGoogle}
           >
             {syncingGoogle ? "Syncing…" : "Sync Google"}
+          </button>
+          <label className="text-xs muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            Drop duration
+            <select
+              className="field-input"
+              style={{ width: 90, padding: "4px 6px" }}
+              value={dropDurationMinutes}
+              onChange={(e) => setDropDurationMinutes(Number(e.target.value))}
+            >
+              <option value={30}>30m</option>
+              <option value={60}>60m</option>
+              <option value={90}>90m</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-btn text-xs"
+            onClick={handleRequestNotifications}
+          >
+            {notificationsEnabled ? "Reminders on" : "Enable reminders"}
           </button>
           <div className="calendar-view-toggle">
             {VIEWS.map((v) => (
@@ -1194,6 +1395,30 @@ const handleSubmitEvent = async (e) => {
                   />
                 </label>
               </div>
+              <label className="field-label">
+                Reminder
+                <select
+                  className="field-input"
+                  value={remindersMap[editingEventId || form.id] || 0}
+                  onChange={(e) => {
+                    const mins = Number(e.target.value);
+                    if (editingEventId) {
+                      saveReminderForEvent(editingEventId, mins);
+                    }
+                  }}
+                  disabled={!editingEventId}
+                >
+                  <option value={0}>None</option>
+                  <option value={10}>10 minutes before</option>
+                  <option value={60}>1 hour before</option>
+                  <option value={1440}>1 day before</option>
+                </select>
+                {!notificationsEnabled && (
+                  <div className="muted text-xs">
+                    Enable reminders above to allow notifications.
+                  </div>
+                )}
+              </label>
 
               <label className="field-label">
                 Location / channel
